@@ -1,0 +1,21 @@
+﻿# Dữ liệu ảnh khuôn mặt và file trọng số mô hình (không đưa lên Git)
+data/
+*.h5
+*.caffemodel
+*.onnx
+*.bin
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.log
+
+# Môi trường ảo và cache
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+env/
+.idea/
+.vscode/
