@@ -26,9 +26,8 @@ FaceCredential::FaceCredential()
       m_cpus(CPUS_INVALID),
       m_pProvider(nullptr),
       m_pEvents(nullptr),
-      m_label(L"Face ID"),
-      m_status(L"Đang nhận diện khuôn mặt..."),
-      m_rescanLabel(L"Quét lại Face ID"),
+      m_userSid(),
+      m_status(L""),
       m_autoTriggered(false),
       m_selected(false),
       m_inScan(false),
@@ -50,24 +49,38 @@ FaceCredential::~FaceCredential() {
 }
 
 HRESULT FaceCredential::Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
-                                   FaceCredentialProvider* ownerProvider) {
+                                   FaceCredentialProvider* ownerProvider,
+                                   const std::wstring& userSid) {
     m_cpus = cpus;
     m_pProvider = ownerProvider;
+    m_userSid = userSid;
     m_autoTriggered = false;
     return S_OK;
+}
+
+void FaceCredential::UpdateContext(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
+                                   const std::wstring& userSid) {
+    if (cpus != CPUS_INVALID) {
+        m_cpus = cpus;
+    }
+    if (!userSid.empty()) {
+        m_userSid = userSid;
+    }
 }
 
 void FaceCredential::PrepareImmediateRescan() noexcept {
     m_autoTriggered = false;
     m_waitingForRetry = false;
-    m_status = L"Đang nhận diện khuôn mặt...";
+    m_status = L"";
 }
 
 IFACEMETHODIMP FaceCredential::QueryInterface(REFIID riid, void** ppv) {
     if (!ppv) return E_POINTER;
     *ppv = nullptr;
-    if (riid == IID_IUnknown || riid == IID_ICredentialProviderCredential) {
-        *ppv = static_cast<ICredentialProviderCredential*>(this);
+    if (riid == IID_IUnknown ||
+        riid == IID_ICredentialProviderCredential ||
+        riid == IID_ICredentialProviderCredential2) {
+        *ppv = static_cast<ICredentialProviderCredential2*>(this);
         AddRef();
         return S_OK;
     }
@@ -76,6 +89,15 @@ IFACEMETHODIMP FaceCredential::QueryInterface(REFIID riid, void** ppv) {
 
 IFACEMETHODIMP_(ULONG) FaceCredential::AddRef()  { return InterlockedIncrement(&m_cRef); }
 IFACEMETHODIMP_(ULONG) FaceCredential::Release() { LONG c = InterlockedDecrement(&m_cRef); if (c == 0) delete this; return c; }
+
+IFACEMETHODIMP FaceCredential::GetUserSid(PWSTR* sid) {
+    if (!sid) return E_POINTER;
+    *sid = nullptr;
+    if (m_userSid.empty()) {
+        return S_FALSE;
+    }
+    return AllocStr(m_userSid.c_str(), sid);
+}
 
 IFACEMETHODIMP FaceCredential::Advise(ICredentialProviderCredentialEvents* e) {
     if (m_pEvents) m_pEvents->Release();
@@ -100,10 +122,10 @@ IFACEMETHODIMP FaceCredential::SetSelected(BOOL* pbAutoLogon) {
         m_waitingForRetry = false;
         StopRetryWatch();
         *pbAutoLogon = TRUE;
-        m_status = L"Đang nhận diện khuôn mặt...";
+        m_status = L"";
     } else {
         *pbAutoLogon = FALSE;
-        m_status = L"Nhấn Space hoặc Enter để quét lại";
+        m_status = L"Nhấn Space hoặc Enter để quét lại Face ID";
         StartRetryWatch();
     }
     if (m_pEvents) {
@@ -124,48 +146,27 @@ IFACEMETHODIMP FaceCredential::GetFieldState(DWORD dwFieldID,
                                              CREDENTIAL_PROVIDER_FIELD_STATE* pcpfs,
                                              CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE* pcpfis) {
     if (dwFieldID >= FIELD_COUNT) return E_INVALIDARG;
-    if (dwFieldID == FIELD_RESCAN) {
-        *pcpfs  = m_waitingForRetry ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
-        *pcpfis = m_waitingForRetry ? CPFIS_FOCUSED : CPFIS_NONE;
-        return S_OK;
-    }
     *pcpfs  = s_FieldStatePairs[dwFieldID].cpfs;
     *pcpfis = s_FieldStatePairs[dwFieldID].cpfis;
     return S_OK;
 }
 
 IFACEMETHODIMP FaceCredential::GetStringValue(DWORD dwFieldID, PWSTR* ppwsz) {
-    switch (dwFieldID) {
-        case FIELD_LABEL:  return AllocStr(m_label.c_str(),       ppwsz);
-        case FIELD_STATUS: return AllocStr(m_status.c_str(),      ppwsz);
-        case FIELD_RESCAN: return AllocStr(m_rescanLabel.c_str(), ppwsz);
+    if (dwFieldID == FIELD_STATUS) {
+        return AllocStr(m_status.c_str(), ppwsz);
     }
     return E_INVALIDARG;
 }
 
-IFACEMETHODIMP FaceCredential::GetBitmapValue(DWORD dwFieldID, HBITMAP* phbmp) {
-    if (dwFieldID != FIELD_TILE_IMAGE || !phbmp) return E_INVALIDARG;
-    HBITMAP hBmp = CreateFaceIdTileBitmap();
-    if (!hBmp) {
-        *phbmp = nullptr;
-        return E_FAIL;
-    }
-    *phbmp = hBmp;
-    return S_OK;
+IFACEMETHODIMP FaceCredential::GetBitmapValue(DWORD, HBITMAP* phbmp) {
+    if (phbmp) *phbmp = nullptr;
+    return E_NOTIMPL;
 }
 
 IFACEMETHODIMP FaceCredential::GetSubmitButtonValue(DWORD dwFieldID, DWORD* pdwAdjacentTo) {
     if (dwFieldID != FIELD_SUBMIT) return E_INVALIDARG;
     *pdwAdjacentTo = FIELD_STATUS;
     return S_OK;
-}
-
-IFACEMETHODIMP FaceCredential::CommandLinkClicked(DWORD dwFieldID) {
-    if (dwFieldID == FIELD_RESCAN) {
-        TriggerRescan();
-        return S_OK;
-    }
-    return E_NOTIMPL;
 }
 
 LRESULT CALLBACK FaceCredential::RetryMsgWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -184,7 +185,6 @@ LRESULT CALLBACK FaceCredential::RetryMsgWndProc(HWND hwnd, UINT msg, WPARAM wPa
 
 void FaceCredential::StartRetryWatch() noexcept {
     m_waitingForRetry = true;
-    // Snapshot current key states so keys already held down while waking screen do not misfire
     m_prevSpaceDown = (GetAsyncKeyState(VK_SPACE)   & 0x8000) != 0;
     m_prevEnterDown = (GetAsyncKeyState(VK_RETURN)  & 0x8000) != 0;
     m_prevFDown     = (GetAsyncKeyState('F')        & 0x8000) != 0;
@@ -278,16 +278,11 @@ IFACEMETHODIMP FaceCredential::GetSerialization(
     m_inScan = true;
     m_waitingForRetry = false;
     StopRetryWatch();
+    m_status = L"";
     if (m_pEvents) {
-        m_pEvents->SetFieldState(this, FIELD_RESCAN, CPFS_HIDDEN);
-        m_pEvents->SetFieldString(this, FIELD_STATUS, L"Đang nhận diện khuôn mặt...");
+        m_pEvents->SetFieldString(this, FIELD_STATUS, L"");
     }
 
-    // 100% Pure C++20 Zero-Daemon On-Demand Flow:
-    // 1. Drop down 120–165 FPS ProMotion iOS Dynamic Island HUD
-    // 2. Open webcam + run YuNet + MiniFASNet + SFace in parallel, shut down webcam LED immediately
-    // 3. On mismatch: Dynamic Island simply flashes coral-red & shakes smoothly, then retracts —
-    //    NO ugly Windows modal notification screen, NO square error icon!
     FaceIdHud hud;
     hud.StartScanning();
 
@@ -307,18 +302,14 @@ IFACEMETHODIMP FaceCredential::GetSerialization(
 
     if (!ok) {
         if (!pw.empty()) SecureZeroMemory(pw.data(), pw.size() * sizeof(wchar_t));
-        m_status = L"Nhấn Space hoặc Enter để quét lại";
+        m_status = L"Nhấn Space hoặc Enter để quét lại Face ID";
         m_waitingForRetry = true;
         if (m_pEvents) {
             m_pEvents->SetFieldString(this, FIELD_STATUS, m_status.c_str());
-            m_pEvents->SetFieldState(this, FIELD_RESCAN, CPFS_DISPLAY_IN_SELECTED_TILE);
-            m_pEvents->SetFieldInteractiveState(this, FIELD_RESCAN, CPFIS_FOCUSED);
         }
         if (m_selected) {
             StartRetryWatch();
         }
-        // Return S_OK with CPGSR_NO_CREDENTIAL_NOT_FINISHED + nullptr status text + CPSI_NONE
-        // so Windows LogonUI stays right on the clean Lock Screen WITHOUT any error modal!
         return S_OK;
     }
 
@@ -333,11 +324,10 @@ IFACEMETHODIMP FaceCredential::GetSerialization(
     }
 
     if (FAILED(hr)) {
-        m_status = L"Lỗi đóng gói thông tin xác thực — chọn PIN/Mật khẩu";
+        m_status = L"Lỗi xác thực — hãy chọn PIN/Mật khẩu bên dưới";
         m_waitingForRetry = true;
         if (m_pEvents) {
             m_pEvents->SetFieldString(this, FIELD_STATUS, m_status.c_str());
-            m_pEvents->SetFieldState(this, FIELD_RESCAN, CPFS_DISPLAY_IN_SELECTED_TILE);
         }
         return S_OK;
     }

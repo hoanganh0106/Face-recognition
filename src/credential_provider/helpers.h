@@ -1,4 +1,10 @@
 #pragma once
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#ifndef NTDDI_VERSION
+#define NTDDI_VERSION 0x0A000000
+#endif
 #include <windows.h>
 #include <credentialprovider.h>
 #include <ntsecapi.h>
@@ -11,13 +17,12 @@ struct FIELD_STATE_PAIR {
     CREDENTIAL_PROVIDER_FIELD_INTERACTIVE_STATE cpfis;
 };
 
-// Field indices for our clean, square-free Windows 11 Lock Screen tile UI.
+// Minimalist V2 User-Bound layout: ZERO custom tile icons, ZERO square buttons.
+// Windows 11 keeps the user's native circular profile picture + display name,
+// while ONLY the 120–165 FPS Dynamic Island animates at the top of the screen.
 enum FIELD_ID : DWORD {
-    FIELD_TILE_IMAGE = 0,
-    FIELD_LABEL      = 1,
-    FIELD_SUBMIT     = 2,  // Hidden (CPFS_HIDDEN) so Windows draws ZERO ugly square arrow button
-    FIELD_STATUS     = 3,
-    FIELD_RESCAN     = 4,  // Clean borderless hyperlink ("Quét lại Face ID")
+    FIELD_SUBMIT = 0,  // Hidden (CPFS_HIDDEN) — satisfies LogonUI auto-logon with 0 visible UI
+    FIELD_STATUS = 1,  // Subtle 1-line hint text under user's native Windows 11 name
     FIELD_COUNT
 };
 

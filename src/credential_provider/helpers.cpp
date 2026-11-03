@@ -4,21 +4,14 @@
 
 namespace FaceUnlock {
 
-// Static field layout for our clean Windows 11 tile (no visible square submit button).
 const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_FieldDescriptors[FIELD_COUNT] = {
-    { FIELD_TILE_IMAGE, CPFT_TILE_IMAGE,    const_cast<PWSTR>(L"Image"),            GUID_NULL },
-    { FIELD_LABEL,      CPFT_LARGE_TEXT,    const_cast<PWSTR>(L"Label"),            GUID_NULL },
-    { FIELD_SUBMIT,     CPFT_SUBMIT_BUTTON, const_cast<PWSTR>(L"Submit"),           GUID_NULL },
-    { FIELD_STATUS,     CPFT_SMALL_TEXT,    const_cast<PWSTR>(L"Status"),           GUID_NULL },
-    { FIELD_RESCAN,     CPFT_COMMAND_LINK,  const_cast<PWSTR>(L"Quét lại Face ID"), GUID_NULL },
+    { FIELD_SUBMIT, CPFT_SUBMIT_BUTTON, const_cast<PWSTR>(L"Face ID"), GUID_NULL },
+    { FIELD_STATUS, CPFT_SMALL_TEXT,    const_cast<PWSTR>(L"Face ID"), GUID_NULL },
 };
 
 const FIELD_STATE_PAIR s_FieldStatePairs[FIELD_COUNT] = {
-    { CPFS_DISPLAY_IN_BOTH,           CPFIS_NONE },     // FIELD_TILE_IMAGE (circular glass emblem)
-    { CPFS_DISPLAY_IN_SELECTED_TILE,  CPFIS_NONE },     // FIELD_LABEL ("Face ID")
-    { CPFS_HIDDEN,                    CPFIS_NONE },     // FIELD_SUBMIT (hidden — eliminates grey square button!)
-    { CPFS_DISPLAY_IN_SELECTED_TILE,  CPFIS_NONE },     // FIELD_STATUS
-    { CPFS_DISPLAY_IN_SELECTED_TILE,  CPFIS_FOCUSED },  // FIELD_RESCAN (borderless text link)
+    { CPFS_HIDDEN,                   CPFIS_NONE },  // FIELD_SUBMIT: 100% invisible (no square button)
+    { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE },  // FIELD_STATUS: subtle native caption text
 };
 
 static void PackString(UNICODE_STRING& u, PCWSTR src, BYTE* base, USHORT& cursor) {
@@ -29,7 +22,7 @@ static void PackString(UNICODE_STRING& u, PCWSTR src, BYTE* base, USHORT& cursor
         u.MaximumLength = maxLen;
         memcpy(base + cursor, src, len);
         *(WCHAR*)(base + cursor + len) = L'\0';
-        u.Buffer = (PWSTR)(ULONG_PTR)cursor;   // store as OFFSET, not pointer
+        u.Buffer = (PWSTR)(ULONG_PTR)cursor;
         cursor = (USHORT)(cursor + maxLen);
     } else {
         u.Length = 0;

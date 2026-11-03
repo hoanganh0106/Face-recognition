@@ -20,6 +20,8 @@ target_include_directories(FaceCredentialProvider PRIVATE
 )
 
 target_compile_definitions(FaceCredentialProvider PRIVATE
+    _WIN32_WINNT=0x0A00
+    NTDDI_VERSION=0x0A000000
     UNICODE _UNICODE
     WIN32_LEAN_AND_MEAN
 )

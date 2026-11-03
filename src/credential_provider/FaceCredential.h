@@ -1,4 +1,10 @@
 #pragma once
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#ifndef NTDDI_VERSION
+#define NTDDI_VERSION 0x0A000000
+#endif
 #include <windows.h>
 #include <credentialprovider.h>
 #include <string>
@@ -7,12 +13,18 @@ namespace FaceUnlock {
 
 class FaceCredentialProvider;
 
-class FaceCredential final : public ICredentialProviderCredential {
+// Implements ICredentialProviderCredential2 (GetUserSid) so Windows 11 merges Face ID
+// seamlessly onto the user's real Windows 11 Lock Screen profile (preserving their round
+// profile picture + Display Name with ZERO legacy V1 square tile icon).
+class FaceCredential final : public ICredentialProviderCredential2 {
 public:
     FaceCredential();
     ~FaceCredential();
 
-    HRESULT Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, FaceCredentialProvider* ownerProvider);
+    HRESULT Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus,
+                       FaceCredentialProvider* ownerProvider,
+                       const std::wstring& userSid);
+    void UpdateContext(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, const std::wstring& userSid);
     void SetOwnerProvider(FaceCredentialProvider* ownerProvider) noexcept { m_pProvider = ownerProvider; }
     void PrepareImmediateRescan() noexcept;
     void StopRetryWatch() noexcept;
@@ -39,7 +51,7 @@ public:
     IFACEMETHODIMP SetStringValue(DWORD, PCWSTR) override { return S_OK; }
     IFACEMETHODIMP SetCheckboxValue(DWORD, BOOL) override { return E_NOTIMPL; }
     IFACEMETHODIMP SetComboBoxSelectedValue(DWORD, DWORD) override { return E_NOTIMPL; }
-    IFACEMETHODIMP CommandLinkClicked(DWORD dwFieldID) override;
+    IFACEMETHODIMP CommandLinkClicked(DWORD) override { return E_NOTIMPL; }
     IFACEMETHODIMP GetSerialization(CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
                                     CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs,
                                     PWSTR* ppwszOptionalStatusText,
@@ -47,6 +59,9 @@ public:
     IFACEMETHODIMP ReportResult(NTSTATUS ntsStatus, NTSTATUS ntsSubstatus,
                                 PWSTR* ppwszOptionalStatusText,
                                 CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon) override;
+
+    // ICredentialProviderCredential2
+    IFACEMETHODIMP GetUserSid(PWSTR* sid) override;
 
 private:
     static LRESULT CALLBACK RetryMsgWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -58,15 +73,13 @@ private:
     CREDENTIAL_PROVIDER_USAGE_SCENARIO m_cpus;
     FaceCredentialProvider* m_pProvider;
     ICredentialProviderCredentialEvents* m_pEvents;
-    std::wstring m_label;
+    std::wstring m_userSid;
     std::wstring m_status;
-    std::wstring m_rescanLabel;
     bool m_autoTriggered;
     bool m_selected;
     bool m_inScan;
     bool m_waitingForRetry;
 
-    // STA message-only window & edge-triggered key states (active ONLY after failed scan while tile selected)
     HWND m_hwndRetry;
     bool m_prevSpaceDown;
     bool m_prevEnterDown;

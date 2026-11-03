@@ -68,6 +68,11 @@ if ($LASTEXITCODE -ne 0) {
     throw "regsvr32 failed to register $SysDll (exit code $LASTEXITCODE)"
 }
 
+$logonUiKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\LogonUI'
+if (Test-Path $logonUiKey) {
+    Set-ItemProperty -Path $logonUiKey -Name 'LastLoggedOnProvider' -Value '{F8A0B4D9-3C7F-4B0A-9E21-8C1B1E2B7C10}' -Type String -ErrorAction SilentlyContinue
+}
+
 Write-Host "`nInstallation complete! (0 MB background RAM - 100% On-Demand)" -ForegroundColor Green
 Write-Host "Next steps inside Face ID Control Center:" -ForegroundColor Yellow
 Write-Host "  1. Click [Quet & Dang ky lai 15 mau mat] to enroll your face (~5s)."

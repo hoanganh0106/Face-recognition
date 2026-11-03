@@ -16,7 +16,7 @@ if ($ClangCmd) {
     Push-Location $CpDir
     try {
         & $clang -std=c++20 -O3 -mavx2 -mfma -Wall -Wextra -shared `
-            -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -I"$IncDir" `
+            -D_WIN32_WINNT=0x0A00 -DNTDDI_VERSION=0x0A000000 -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -I"$IncDir" `
             dll.cpp ClassFactory.cpp FaceCredentialProvider.cpp FaceCredential.cpp FaceIdHud.cpp NativeFaceEngine.cpp helpers.cpp FaceCredentialProvider.def `
             -lcrypt32 -lmfplat -lmf -lmfreadwrite -lmfuuid -lcredui -lsecur32 -lshlwapi -lole32 -loleaut32 -ladvapi32 -luser32 -lgdi32 -lgdiplus -luuid `
             -static-libgcc -static-libstdc++ "-Wl,--kill-at" `
