@@ -2,29 +2,25 @@
 #include <wincred.h>
 #include <intsafe.h>
 
-#pragma comment(lib, "credui.lib")
-#pragma comment(lib, "secur32.lib")
-
 namespace FaceUnlock {
 
-// Static field layout for our tile.
+// Static field layout for our clean Windows 11 tile (no visible square submit button).
 const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_FieldDescriptors[FIELD_COUNT] = {
-    { FIELD_TILE_IMAGE, CPFT_TILE_IMAGE,    const_cast<PWSTR>(L"Image"),  GUID_NULL },
-    { FIELD_LABEL,      CPFT_LARGE_TEXT,    const_cast<PWSTR>(L"Label"),  GUID_NULL },
-    { FIELD_SUBMIT,     CPFT_SUBMIT_BUTTON, const_cast<PWSTR>(L"Submit"), GUID_NULL },
-    { FIELD_STATUS,     CPFT_SMALL_TEXT,    const_cast<PWSTR>(L"Status"), GUID_NULL },
+    { FIELD_TILE_IMAGE, CPFT_TILE_IMAGE,    const_cast<PWSTR>(L"Image"),            GUID_NULL },
+    { FIELD_LABEL,      CPFT_LARGE_TEXT,    const_cast<PWSTR>(L"Label"),            GUID_NULL },
+    { FIELD_SUBMIT,     CPFT_SUBMIT_BUTTON, const_cast<PWSTR>(L"Submit"),           GUID_NULL },
+    { FIELD_STATUS,     CPFT_SMALL_TEXT,    const_cast<PWSTR>(L"Status"),           GUID_NULL },
+    { FIELD_RESCAN,     CPFT_COMMAND_LINK,  const_cast<PWSTR>(L"Quét lại Face ID"), GUID_NULL },
 };
 
 const FIELD_STATE_PAIR s_FieldStatePairs[FIELD_COUNT] = {
-    { CPFS_DISPLAY_IN_BOTH,           CPFIS_NONE },
-    { CPFS_DISPLAY_IN_SELECTED_TILE,  CPFIS_NONE },
-    { CPFS_DISPLAY_IN_SELECTED_TILE,  CPFIS_NONE },
-    { CPFS_DISPLAY_IN_SELECTED_TILE,  CPFIS_NONE },
+    { CPFS_DISPLAY_IN_BOTH,           CPFIS_NONE },     // FIELD_TILE_IMAGE (circular glass emblem)
+    { CPFS_DISPLAY_IN_SELECTED_TILE,  CPFIS_NONE },     // FIELD_LABEL ("Face ID")
+    { CPFS_HIDDEN,                    CPFIS_NONE },     // FIELD_SUBMIT (hidden — eliminates grey square button!)
+    { CPFS_DISPLAY_IN_SELECTED_TILE,  CPFIS_NONE },     // FIELD_STATUS
+    { CPFS_DISPLAY_IN_SELECTED_TILE,  CPFIS_FOCUSED },  // FIELD_RESCAN (borderless text link)
 };
 
-// Copy `src` into buffer at cursor, set UNICODE_STRING fields so that
-// Buffer is an OFFSET (in bytes) from the start of the serialization
-// buffer — matching CredPackAuthenticationBufferW layout (with NUL terminator).
 static void PackString(UNICODE_STRING& u, PCWSTR src, BYTE* base, USHORT& cursor) {
     USHORT len = (USHORT)(wcslen(src) * sizeof(WCHAR));
     if (len > 0) {
@@ -53,8 +49,6 @@ HRESULT KerbPackInteractiveUnlock(const std::wstring& domain,
     const USHORT uAlloc = username.empty() ? 0 : (USHORT)((username.size() + 1) * sizeof(WCHAR));
     const USHORT pAlloc = password.empty() ? 0 : (USHORT)((password.size() + 1) * sizeof(WCHAR));
 
-    // Always allocate at least KERB_INTERACTIVE_UNLOCK_LOGON (it's a superset
-    // of KERB_INTERACTIVE_LOGON) so the LogonId field is zeroed for both scenarios.
     const size_t headerSize = sizeof(KERB_INTERACTIVE_UNLOCK_LOGON);
     const size_t total = headerSize + dAlloc + uAlloc + pAlloc;
 
@@ -75,7 +69,6 @@ HRESULT KerbPackInteractiveUnlock(const std::wstring& domain,
     pcpcs->rgbSerialization = buffer;
     pcpcs->cbSerialization  = (ULONG)total;
 
-    // Authentication package: use "Negotiate" (auto-picks CloudAP / Kerberos / NTLM).
     HANDLE lsa = nullptr;
     NTSTATUS st = LsaConnectUntrusted(&lsa);
     if (st != 0) {
@@ -87,10 +80,10 @@ HRESULT KerbPackInteractiveUnlock(const std::wstring& domain,
     }
 
     LSA_STRING name;
-    const char pkgName[] = "Negotiate";  // NEGOSSP_NAME_A
+    const char pkgName[] = "Negotiate";
     name.Buffer = const_cast<PCHAR>(pkgName);
     name.Length = (USHORT)(sizeof(pkgName) - 1);
-    name.MaximumLength = (USHORT)sizeof(pkgName);  // include NUL
+    name.MaximumLength = (USHORT)sizeof(pkgName);
 
     ULONG pkgId = 0;
     st = LsaLookupAuthenticationPackage(lsa, &name, &pkgId);
@@ -103,7 +96,7 @@ HRESULT KerbPackInteractiveUnlock(const std::wstring& domain,
         return HRESULT_FROM_NT(st);
     }
     pcpcs->ulAuthenticationPackage = pkgId;
-    pcpcs->clsidCredentialProvider = GUID_NULL;  // filled by caller
+    pcpcs->clsidCredentialProvider = GUID_NULL;
     return S_OK;
 }
 

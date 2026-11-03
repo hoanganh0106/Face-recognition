@@ -5,12 +5,17 @@
 
 namespace FaceUnlock {
 
-class FaceCredential : public ICredentialProviderCredential {
+class FaceCredentialProvider;
+
+class FaceCredential final : public ICredentialProviderCredential {
 public:
     FaceCredential();
     ~FaceCredential();
 
-    HRESULT Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus);
+    HRESULT Initialize(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, FaceCredentialProvider* ownerProvider);
+    void SetOwnerProvider(FaceCredentialProvider* ownerProvider) noexcept { m_pProvider = ownerProvider; }
+    void PrepareImmediateRescan() noexcept;
+    void StopRetryWatch() noexcept;
 
     // IUnknown
     IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv) override;
@@ -34,7 +39,7 @@ public:
     IFACEMETHODIMP SetStringValue(DWORD, PCWSTR) override { return S_OK; }
     IFACEMETHODIMP SetCheckboxValue(DWORD, BOOL) override { return E_NOTIMPL; }
     IFACEMETHODIMP SetComboBoxSelectedValue(DWORD, DWORD) override { return E_NOTIMPL; }
-    IFACEMETHODIMP CommandLinkClicked(DWORD) override { return E_NOTIMPL; }
+    IFACEMETHODIMP CommandLinkClicked(DWORD dwFieldID) override;
     IFACEMETHODIMP GetSerialization(CREDENTIAL_PROVIDER_GET_SERIALIZATION_RESPONSE* pcpgsr,
                                     CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION* pcpcs,
                                     PWSTR* ppwszOptionalStatusText,
@@ -44,12 +49,31 @@ public:
                                 CREDENTIAL_PROVIDER_STATUS_ICON* pcpsiOptionalStatusIcon) override;
 
 private:
+    static LRESULT CALLBACK RetryMsgWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    void StartRetryWatch() noexcept;
+    void PollRetryKeys() noexcept;
+    void TriggerRescan() noexcept;
+
     LONG m_cRef;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO m_cpus;
+    FaceCredentialProvider* m_pProvider;
     ICredentialProviderCredentialEvents* m_pEvents;
     std::wstring m_label;
     std::wstring m_status;
+    std::wstring m_rescanLabel;
     bool m_autoTriggered;
+    bool m_selected;
+    bool m_inScan;
+    bool m_waitingForRetry;
+
+    // STA message-only window & edge-triggered key states (active ONLY after failed scan while tile selected)
+    HWND m_hwndRetry;
+    bool m_prevSpaceDown;
+    bool m_prevEnterDown;
+    bool m_prevFDown;
+    bool m_prevCtrlDown;
+    ULONGLONG m_lastCtrlTapTick;
+    ULONGLONG m_lastScanEndTick;
 };
 
 }  // namespace FaceUnlock

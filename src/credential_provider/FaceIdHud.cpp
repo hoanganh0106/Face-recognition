@@ -97,7 +97,8 @@ void DrawFaceIdGlyph(Gdiplus::Graphics& g,
                      float timeSec,
                      const Gdiplus::Color& primaryCol,
                      float alphaScale,
-                     bool drawScanBeam) {
+                     bool drawScanBeam,
+                     bool drawOuterBrackets = true) {
     auto withAlpha = [&](const Gdiplus::Color& c, float mult) -> Gdiplus::Color {
         int a = static_cast<int>(std::round(c.GetA() * Clamp01(alphaScale * mult)));
         return Gdiplus::Color(static_cast<BYTE>((std::clamp)(a, 0, 255)), c.GetR(), c.GetG(), c.GetB());
@@ -109,44 +110,46 @@ void DrawFaceIdGlyph(Gdiplus::Graphics& g,
     float armLen = size * 0.28f;
     float stroke = (std::max)(2.0f, size * 0.082f);
 
-    Gdiplus::Pen bracketPen(withAlpha(primaryCol, 1.0f), stroke);
-    bracketPen.SetStartCap(Gdiplus::LineCapRound);
-    bracketPen.SetEndCap(Gdiplus::LineCapRound);
-    bracketPen.SetLineJoin(Gdiplus::LineJoinRound);
-
     float left = cx - half;
     float top = cy - half;
     float right = cx + half;
     float bottom = cy + half;
     float d = cornerR * 2.0f;
 
-    {
-        Gdiplus::GraphicsPath p;
-        p.AddLine(left, top + armLen, left, top + cornerR);
-        p.AddArc(left, top, d, d, 180.0f, 90.0f);
-        p.AddLine(left + cornerR, top, left + armLen, top);
-        g.DrawPath(&bracketPen, &p);
-    }
-    {
-        Gdiplus::GraphicsPath p;
-        p.AddLine(right - armLen, top, right - cornerR, top);
-        p.AddArc(right - d, top, d, d, 270.0f, 90.0f);
-        p.AddLine(right, top + cornerR, right, top + armLen);
-        g.DrawPath(&bracketPen, &p);
-    }
-    {
-        Gdiplus::GraphicsPath p;
-        p.AddLine(right, bottom - armLen, right, bottom - cornerR);
-        p.AddArc(right - d, bottom - d, d, d, 0.0f, 90.0f);
-        p.AddLine(right - cornerR, bottom, right - armLen, bottom);
-        g.DrawPath(&bracketPen, &p);
-    }
-    {
-        Gdiplus::GraphicsPath p;
-        p.AddLine(left + armLen, bottom, left + cornerR, bottom);
-        p.AddArc(left, bottom - d, d, d, 90.0f, 90.0f);
-        p.AddLine(left, bottom - cornerR, left, bottom - armLen);
-        g.DrawPath(&bracketPen, &p);
+    if (drawOuterBrackets) {
+        Gdiplus::Pen bracketPen(withAlpha(primaryCol, 1.0f), stroke);
+        bracketPen.SetStartCap(Gdiplus::LineCapRound);
+        bracketPen.SetEndCap(Gdiplus::LineCapRound);
+        bracketPen.SetLineJoin(Gdiplus::LineJoinRound);
+
+        {
+            Gdiplus::GraphicsPath p;
+            p.AddLine(left, top + armLen, left, top + cornerR);
+            p.AddArc(left, top, d, d, 180.0f, 90.0f);
+            p.AddLine(left + cornerR, top, left + armLen, top);
+            g.DrawPath(&bracketPen, &p);
+        }
+        {
+            Gdiplus::GraphicsPath p;
+            p.AddLine(right - armLen, top, right - cornerR, top);
+            p.AddArc(right - d, top, d, d, 270.0f, 90.0f);
+            p.AddLine(right, top + cornerR, right, top + armLen);
+            g.DrawPath(&bracketPen, &p);
+        }
+        {
+            Gdiplus::GraphicsPath p;
+            p.AddLine(right, bottom - armLen, right, bottom - cornerR);
+            p.AddArc(right - d, bottom - d, d, d, 0.0f, 90.0f);
+            p.AddLine(right - cornerR, bottom, right - armLen, bottom);
+            g.DrawPath(&bracketPen, &p);
+        }
+        {
+            Gdiplus::GraphicsPath p;
+            p.AddLine(left + armLen, bottom, left + cornerR, bottom);
+            p.AddArc(left, bottom - d, d, d, 90.0f, 90.0f);
+            p.AddLine(left, bottom - cornerR, left, bottom - armLen);
+            g.DrawPath(&bracketPen, &p);
+        }
     }
 
     float px = std::sin(timeSec * 4.2f) * (size * 0.048f);
@@ -154,7 +157,7 @@ void DrawFaceIdGlyph(Gdiplus::Graphics& g,
     float fcx = cx + px;
     float fcy = cy + py;
 
-    Gdiplus::Pen featurePen(withAlpha(primaryCol, 0.92f), stroke * 0.88f);
+    Gdiplus::Pen featurePen(withAlpha(primaryCol, 0.94f), stroke * 0.88f);
     featurePen.SetStartCap(Gdiplus::LineCapRound);
     featurePen.SetEndCap(Gdiplus::LineCapRound);
     featurePen.SetLineJoin(Gdiplus::LineJoinRound);
@@ -260,31 +263,6 @@ void DrawSuccessCheckGlyph(Gdiplus::Graphics& g,
     }
 }
 
-void DrawFailedGlyph(Gdiplus::Graphics& g,
-                     float cx,
-                     float cy,
-                     float size,
-                     float progress,
-                     float alphaScale) {
-    float p = EaseOutCubic(progress);
-    BYTE aRing = static_cast<BYTE>(std::round(255.0f * Clamp01(alphaScale)));
-    BYTE aFill = static_cast<BYTE>(std::round(44.0f * Clamp01(alphaScale)));
-
-    float r = size * 0.46f;
-    Gdiplus::SolidBrush fillBrush(Gdiplus::Color(aFill, 255, 69, 58));
-    g.FillEllipse(&fillBrush, cx - r, cy - r, r * 2.0f, r * 2.0f);
-
-    Gdiplus::Pen ringPen(Gdiplus::Color(aRing, 255, 69, 58), (std::max)(2.0f, size * 0.075f));
-    g.DrawEllipse(&ringPen, cx - r, cy - r, r * 2.0f, r * 2.0f);
-
-    float arm = r * 0.34f * p;
-    Gdiplus::Pen xPen(Gdiplus::Color(aRing, 255, 95, 86), (std::max)(2.3f, size * 0.09f));
-    xPen.SetStartCap(Gdiplus::LineCapRound);
-    xPen.SetEndCap(Gdiplus::LineCapRound);
-    g.DrawLine(&xPen, cx - arm, cy - arm, cx + arm, cy + arm);
-    g.DrawLine(&xPen, cx + arm, cy - arm, cx - arm, cy + arm);
-}
-
 LRESULT CALLBACK HudWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == WM_ERASEBKGND) return 1;
     return DefWindowProcW(hwnd, msg, wParam, lParam);
@@ -318,7 +296,6 @@ void FaceIdHud::StartScanning() {
 void FaceIdHud::FinishWithResult(bool success) {
     if (!m_thread.joinable()) return;
 
-    // Guarantee smooth Dynamic Island expansion before morphing to checkmark
     LARGE_INTEGER now{};
     QueryPerformanceCounter(&now);
     double elapsedMs = ElapsedSecondsQpc(m_startQpc, now, m_qpcFreq) * 1000.0;
@@ -342,7 +319,6 @@ void FaceIdHud::StopImmediate() {
 }
 
 void FaceIdHud::ThreadMain() {
-    // Boost render thread priority for jitter-free 120–165Hz frame delivery
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
@@ -351,7 +327,6 @@ void FaceIdHud::ThreadMain() {
         return;
     }
 
-    // Query primary monitor physical geometry + native panel refresh rate (120Hz / 165Hz / 240Hz)
     POINT ptZero{ 0, 0 };
     HMONITOR hMon = MonitorFromPoint(ptZero, MONITOR_DEFAULTTOPRIMARY);
     MONITORINFOEXW mi{};
@@ -421,7 +396,6 @@ void FaceIdHud::ThreadMain() {
     HBITMAP hDib = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &dibBits, nullptr, 0);
     HGDIOBJ oldBmp = hDib ? SelectObject(memDc, hDib) : nullptr;
 
-    // NT Kernel High-Resolution Waitable Timer (~0.5ms hardware precision without global timer side effects)
     HANDLE hHiResTimer = CreateWaitableTimerExW(
         nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     if (!hHiResTimer) {
@@ -466,7 +440,7 @@ void FaceIdHud::ThreadMain() {
                 activePhase = Phase::Retract;
                 phaseQpc = nowQpc;
                 phaseSec = 0.0f;
-            } else if (activePhase == Phase::Failed && phaseSec >= 0.62f) {
+            } else if (activePhase == Phase::Failed && phaseSec >= 0.56f) {
                 activePhase = Phase::Retract;
                 phaseQpc = nowQpc;
                 phaseSec = 0.0f;
@@ -483,6 +457,7 @@ void FaceIdHud::ThreadMain() {
             float masterAlpha = 1.0f;
             float shakeX = 0.0f;
             float liftY = 0.0f;
+            float redFlashPulse = 0.0f;
 
             if (activePhase == Phase::Scanning) {
                 morph = SpringExpand(totalSec / 0.35f);
@@ -491,9 +466,11 @@ void FaceIdHud::ThreadMain() {
                 morph = 1.0f + 0.026f * std::sin(Clamp01(phaseSec / 0.26f) * kPi);
                 masterAlpha = 1.0f;
             } else if (activePhase == Phase::Failed) {
+                // Pure iOS Dynamic Island crimson flash + horizontal damped shake (no modal swap!)
                 morph = 1.0f;
                 masterAlpha = 1.0f;
-                shakeX = (15.0f * scale) * std::exp(-6.2f * phaseSec) * std::sin(38.0f * phaseSec);
+                shakeX = (14.5f * scale) * std::exp(-6.4f * phaseSec) * std::sin(38.0f * phaseSec);
+                redFlashPulse = std::exp(-3.4f * phaseSec) * (0.55f + 0.45f * std::abs(std::sin(phaseSec * 17.0f)));
             } else if (activePhase == Phase::Retract) {
                 float rt = EaseInCubic(phaseSec / 0.16f);
                 morph = 1.0f - rt;
@@ -511,21 +488,28 @@ void FaceIdHud::ThreadMain() {
 
             {
                 Gdiplus::Graphics g(&gdiBmp);
-                // Sub-pixel Half offset + un-snapped AntiAlias text prevents 1px grid stepping at 120–165 FPS
                 g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
                 g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
                 g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
 
+                const bool isFailStyle = (activePhase == Phase::Failed) ||
+                                         (activePhase == Phase::Retract && requested == Phase::Failed);
+                const bool isSuccessStyle = (activePhase == Phase::Success) ||
+                                            (activePhase == Phase::Retract && requested == Phase::Success);
+
                 Gdiplus::Color accentCol(255, 45, 212, 255);
-                if (activePhase == Phase::Success) {
+                if (isSuccessStyle) {
                     accentCol = Gdiplus::Color(255, 48, 209, 88);
-                } else if (activePhase == Phase::Failed) {
-                    accentCol = Gdiplus::Color(255, 255, 69, 58);
+                } else if (isFailStyle) {
+                    accentCol = Gdiplus::Color(255, 255, 59, 48);
                 }
 
+                // Ambient halo glow (boosted crimson pulse during Failed flash)
+                float haloBoost = isFailStyle ? (1.0f + 1.35f * redFlashPulse) : 1.0f;
                 for (int layer = 3; layer >= 1; --layer) {
                     float pad = layer * 4.2f * scale;
-                    BYTE glowA = static_cast<BYTE>(std::round((18.0f / layer) * masterAlpha));
+                    int rawA = static_cast<int>(std::round((18.0f * haloBoost / layer) * masterAlpha));
+                    BYTE glowA = static_cast<BYTE>((std::clamp)(rawA, 0, 255));
                     Gdiplus::GraphicsPath glowPath;
                     AddRoundedRect(glowPath, pillX - pad, pillY - pad * 0.6f + 2.0f * scale,
                                    pillW + pad * 2.0f, pillH + pad * 1.6f, pillR + pad);
@@ -534,14 +518,21 @@ void FaceIdHud::ThreadMain() {
                     g.FillPath(&glowBrush, &glowPath);
                 }
 
+                // Pill body (deep obsidian + crimson inner flash tint when scan fails)
                 Gdiplus::GraphicsPath bodyPath;
                 AddRoundedRect(bodyPath, pillX, pillY, pillW, pillH, pillR);
                 BYTE bodyA = static_cast<BYTE>(std::round(244.0f * masterAlpha));
-                Gdiplus::SolidBrush bodyBrush(Gdiplus::Color(bodyA, 11, 13, 19));
+                BYTE bodyR = static_cast<BYTE>(std::round(11.0f + 56.0f * redFlashPulse));
+                BYTE bodyG = static_cast<BYTE>(std::round(13.0f + 4.0f  * redFlashPulse));
+                BYTE bodyB = static_cast<BYTE>(std::round(19.0f + 4.0f  * redFlashPulse));
+                Gdiplus::SolidBrush bodyBrush(Gdiplus::Color(bodyA, bodyR, bodyG, bodyB));
                 g.FillPath(&bodyBrush, &bodyPath);
 
-                BYTE rimTopA = static_cast<BYTE>(std::round(78.0f * masterAlpha));
-                BYTE rimBotA = static_cast<BYTE>(std::round(24.0f * masterAlpha));
+                // Rim highlight
+                int topAlphaRaw = static_cast<int>(std::round((78.0f + 115.0f * redFlashPulse) * masterAlpha));
+                int botAlphaRaw = static_cast<int>(std::round((24.0f + 70.0f  * redFlashPulse) * masterAlpha));
+                BYTE rimTopA = static_cast<BYTE>((std::clamp)(topAlphaRaw, 0, 255));
+                BYTE rimBotA = static_cast<BYTE>((std::clamp)(botAlphaRaw, 0, 255));
                 Gdiplus::LinearGradientBrush rimBrush(
                     Gdiplus::PointF(pillX, pillY),
                     Gdiplus::PointF(pillX, pillY + pillH),
@@ -550,7 +541,7 @@ void FaceIdHud::ThreadMain() {
                                    static_cast<BYTE>((255 + accentCol.GetG()) / 2),
                                    static_cast<BYTE>((255 + accentCol.GetB()) / 2)),
                     Gdiplus::Color(rimBotA, accentCol.GetR(), accentCol.GetG(), accentCol.GetB()));
-                Gdiplus::Pen rimPen(&rimBrush, (std::max)(1.2f, 1.35f * scale));
+                Gdiplus::Pen rimPen(&rimBrush, (std::max)(1.2f, (1.35f + 0.55f * redFlashPulse) * scale));
                 g.DrawPath(&rimPen, &bodyPath);
 
                 float contentAlpha = Clamp01((morph - 0.35f) / 0.55f) * masterAlpha;
@@ -561,33 +552,29 @@ void FaceIdHud::ThreadMain() {
                     float iconCx = pillX + 44.0f * scale;
                     float iconCy = pillY + pillH * 0.5f;
 
-                    if (activePhase == Phase::Scanning ||
-                        (activePhase == Phase::Retract && requested == Phase::Scanning)) {
-                        DrawFaceIdGlyph(g, iconCx, iconCy, iconSize, totalSec,
-                                        accentCol, contentAlpha, true);
-                    } else if (activePhase == Phase::Success ||
-                               (activePhase == Phase::Retract && requested == Phase::Success)) {
+                    if (isSuccessStyle) {
                         float cp = (activePhase == Phase::Success) ? (phaseSec / 0.25f) : 1.0f;
                         DrawSuccessCheckGlyph(g, iconCx, iconCy, iconSize, cp, contentAlpha);
                     } else {
-                        float fp = (activePhase == Phase::Failed) ? (phaseSec / 0.18f) : 1.0f;
-                        DrawFailedGlyph(g, iconCx, iconCy, iconSize, fp, contentAlpha);
+                        // Keep the sleek Face ID glyph in BOTH Scanning & Red-Flash Failure (no ugly X icon!)
+                        DrawFaceIdGlyph(g, iconCx, iconCy, iconSize,
+                                        isFailStyle ? 0.0f : totalSec,
+                                        accentCol, contentAlpha,
+                                        !isFailStyle, true);
                     }
 
                     const wchar_t* titleTxt = L"Face ID";
                     const wchar_t* subTxt   = L"Đang nhận diện khuôn mặt...";
                     Gdiplus::Color subCol(static_cast<BYTE>(std::round(185.0f * contentAlpha)), 156, 168, 188);
 
-                    if (activePhase == Phase::Success ||
-                        (activePhase == Phase::Retract && requested == Phase::Success)) {
+                    if (isSuccessStyle) {
                         titleTxt = L"Đã mở khóa";
                         subTxt   = L"Xác thực khuôn mặt thành công";
                         subCol   = Gdiplus::Color(static_cast<BYTE>(std::round(235.0f * contentAlpha)), 65, 222, 105);
-                    } else if (activePhase == Phase::Failed ||
-                               (activePhase == Phase::Retract && requested == Phase::Failed)) {
-                        titleTxt = L"Không khớp";
-                        subTxt   = L"Nhấn Enter để thử lại";
-                        subCol   = Gdiplus::Color(static_cast<BYTE>(std::round(230.0f * contentAlpha)), 255, 105, 97);
+                    } else if (isFailStyle) {
+                        titleTxt = L"Face ID";
+                        subTxt   = L"Nhấn Space / Enter để quét lại";
+                        subCol   = Gdiplus::Color(static_cast<BYTE>(std::round(235.0f * contentAlpha)), 255, 115, 108);
                     }
 
                     float textLeft = pillX + 78.0f * scale;
@@ -631,9 +618,6 @@ void FaceIdHud::ThreadMain() {
 
             UpdateLayeredWindow(hwnd, screenDc, &ptPos, &szWnd, memDc, &ptSrc, 0, &blend, ULW_ALPHA);
 
-            // Drift-free 120–165+ FPS ProMotion frame pacing:
-            // 1) Sleep in NT Kernel High-Resolution Timer for bulk of interval (zero CPU waste)
-            // 2) Micro-spin (_mm_pause) for final ~0.3ms to lock exact sub-millisecond cadence
             nextDeadlineQpc += frameStepQpc;
             LARGE_INTEGER afterRenderQpc{};
             QueryPerformanceCounter(&afterRenderQpc);
@@ -655,7 +639,6 @@ void FaceIdHud::ThreadMain() {
                     Sleep(1);
                 }
 
-                // Final precision lock to exact QPC frame boundary
                 for (;;) {
                     LARGE_INTEGER spinQpc{};
                     QueryPerformanceCounter(&spinQpc);
@@ -663,7 +646,6 @@ void FaceIdHud::ThreadMain() {
                     _mm_pause();
                 }
             } else if (remainingTicks < -frameStepQpc * 2) {
-                // Re-anchor deadline if OS ever preempted thread so it doesn't fast-forward
                 nextDeadlineQpc = afterRenderQpc.QuadPart;
             }
         }
@@ -679,6 +661,7 @@ void FaceIdHud::ThreadMain() {
     Gdiplus::GdiplusShutdown(gdiplusToken);
 }
 
+// 100% Circular frosted-glass Lock Screen avatar (zero square corners!)
 HBITMAP CreateFaceIdTileBitmap() {
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     ULONG_PTR token = 0;
@@ -708,20 +691,27 @@ HBITMAP CreateFaceIdTileBitmap() {
             g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
             g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
 
-            Gdiplus::GraphicsPath bgPath;
-            AddRoundedRect(bgPath, 6.0f, 6.0f, 116.0f, 116.0f, 28.0f);
-            Gdiplus::LinearGradientBrush bgBrush(
-                Gdiplus::PointF(0.0f, 0.0f),
-                Gdiplus::PointF(128.0f, 128.0f),
-                Gdiplus::Color(255, 16, 26, 46),
-                Gdiplus::Color(255, 10, 14, 24));
-            g.FillPath(&bgBrush, &bgPath);
+            // Pure circular glass disc matching Windows 11 circular user profile geometry
+            Gdiplus::LinearGradientBrush discBrush(
+                Gdiplus::PointF(12.0f, 12.0f),
+                Gdiplus::PointF(116.0f, 116.0f),
+                Gdiplus::Color(220, 18, 28, 48),
+                Gdiplus::Color(235, 9, 13, 22));
+            g.FillEllipse(&discBrush, 8.0f, 8.0f, 112.0f, 112.0f);
 
-            Gdiplus::Pen borderPen(Gdiplus::Color(150, 50, 212, 255), 2.5f);
-            g.DrawPath(&borderPen, &bgPath);
+            // Subtle dual circular glowing rings (no square corners!)
+            Gdiplus::Pen outerRing(Gdiplus::Color(155, 50, 212, 255), 2.4f);
+            g.DrawEllipse(&outerRing, 8.0f, 8.0f, 112.0f, 112.0f);
 
-            DrawFaceIdGlyph(g, 64.0f, 64.0f, 74.0f, 0.0f,
-                            Gdiplus::Color(255, 50, 215, 255), 1.0f, false);
+            Gdiplus::Pen innerArcPen(Gdiplus::Color(90, 90, 225, 255), 1.8f);
+            innerArcPen.SetStartCap(Gdiplus::LineCapRound);
+            innerArcPen.SetEndCap(Gdiplus::LineCapRound);
+            g.DrawArc(&innerArcPen, 18.0f, 18.0f, 92.0f, 92.0f, -45.0f, 90.0f);
+            g.DrawArc(&innerArcPen, 18.0f, 18.0f, 92.0f, 92.0f, 135.0f, 90.0f);
+
+            // Draw only the clean curved facial features inside the circle (drawOuterBrackets = false)
+            DrawFaceIdGlyph(g, 64.0f, 65.0f, 68.0f, 0.0f,
+                            Gdiplus::Color(255, 70, 222, 255), 1.0f, false, false);
         }
         PremultiplyAlphaBuffer(static_cast<uint32_t*>(bits), sz * sz);
     }
@@ -735,7 +725,7 @@ HBITMAP CreateFaceIdTileBitmap() {
 extern "C" __declspec(dllexport) void WINAPI PreviewFaceIdHud(BOOL success) {
     FaceUnlock::FaceIdHud hud;
     hud.StartScanning();
-    Sleep(950);
+    Sleep(850);
     hud.FinishWithResult(success != FALSE);
 }
 

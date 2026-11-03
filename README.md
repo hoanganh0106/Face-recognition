@@ -128,7 +128,7 @@ Sau khi build xong, chạy lại `.\Install.cmd` (khi máy đang mở khóa ở 
 ## ❓ Câu hỏi thường gặp & Xử lý sự cố (FAQ & Troubleshooting)
 
 1. **Nếu phòng tối đen hoặc che camera thì có bị kẹt ngoài màn hình khóa không?**
-   - **Không bao giờ.** Nếu sau ~`1 giây` không thấy mặt hoặc không khớp, Dynamic Island sẽ lắc nhẹ báo không khớp và dừng quét. Bạn chỉ việc bấm **Enter** để quét lại, hoặc bấm **Sign-in options (Tùy chọn đăng nhập)** bên dưới để nhập **PIN / Mật khẩu** bình thường của Windows.
+   - **Không bao giờ.** Nếu sau ~`1 giây` không thấy mặt hoặc không khớp, Dynamic Island chỉ **nháy đỏ nhẹ kèm rung ngang kiểu iOS** rồi thu gọn vào cạnh trên màn hình (hoàn toàn không bật hộp thoại báo lỗi rườm rà của Windows). Bạn chỉ cần gõ nhẹ **phím `Space` (Phím cách)**, **`Enter`**, phím **`F`**, **nhấp đúp `Ctrl`**, hoặc bấm chữ **`Quét lại Face ID`** để quét lại ngay lập tức — hoặc chọn **Sign-in options** bên dưới để nhập **PIN / Mật khẩu** bình thường.
 2. **Tại sao nhập mã PIN 6 số vào ô Mật khẩu lại báo lỗi LSA?**
    - Mã PIN của Windows Hello được gắn cứng với chip TPM nội bộ của provider Microsoft PIN, các Credential Provider bên thứ ba bắt buộc xác thực qua gói `Negotiate` / `CloudAP` bằng **Mật khẩu tài khoản Microsoft (hoặc mật khẩu Local)**. Khi bạn lưu mật khẩu Microsoft vào ứng dụng, mã PIN 6 số cũ của bạn trên màn hình khóa vẫn giữ nguyên không bị mất.
 3. **Khi đổi mật khẩu tài khoản Microsoft / Windows thì làm gì?**

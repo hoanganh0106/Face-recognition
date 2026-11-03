@@ -7,7 +7,7 @@
 
 namespace FaceUnlock {
 
-class ClassFactory : public IClassFactory {
+class ClassFactory final : public IClassFactory {
 public:
     ClassFactory() : m_cRef(1) {}
     IFACEMETHODIMP QueryInterface(REFIID riid, void** ppv) override {

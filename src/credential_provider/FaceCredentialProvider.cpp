@@ -6,10 +6,23 @@
 namespace FaceUnlock {
 
 FaceCredentialProvider::FaceCredentialProvider()
-    : m_cRef(1), m_cpus(CPUS_INVALID), m_pCred(nullptr) {}
+    : m_cRef(1),
+      m_cpus(CPUS_INVALID),
+      m_pCred(nullptr),
+      m_pProviderEvents(nullptr),
+      m_upAdviseContext(0),
+      m_forceAutoLogonNext(false) {}
 
 FaceCredentialProvider::~FaceCredentialProvider() {
-    if (m_pCred) { m_pCred->Release(); m_pCred = nullptr; }
+    if (m_pProviderEvents) {
+        m_pProviderEvents->Release();
+        m_pProviderEvents = nullptr;
+    }
+    if (m_pCred) {
+        m_pCred->SetOwnerProvider(nullptr);
+        m_pCred->Release();
+        m_pCred = nullptr;
+    }
 }
 
 IFACEMETHODIMP FaceCredentialProvider::QueryInterface(REFIID riid, void** ppv) {
@@ -22,11 +35,11 @@ IFACEMETHODIMP FaceCredentialProvider::QueryInterface(REFIID riid, void** ppv) {
     }
     return E_NOINTERFACE;
 }
+
 IFACEMETHODIMP_(ULONG) FaceCredentialProvider::AddRef()  { return InterlockedIncrement(&m_cRef); }
 IFACEMETHODIMP_(ULONG) FaceCredentialProvider::Release() { LONG c = InterlockedDecrement(&m_cRef); if (c == 0) delete this; return c; }
 
 IFACEMETHODIMP FaceCredentialProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAGE_SCENARIO cpus, DWORD) {
-    // We only participate in logon and unlock.
     switch (cpus) {
         case CPUS_LOGON:
         case CPUS_UNLOCK_WORKSTATION:
@@ -34,8 +47,12 @@ IFACEMETHODIMP FaceCredentialProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAG
             if (!m_pCred) {
                 m_pCred = new (std::nothrow) FaceCredential();
                 if (!m_pCred) return E_OUTOFMEMORY;
-                HRESULT hr = m_pCred->Initialize(cpus);
-                if (FAILED(hr)) { m_pCred->Release(); m_pCred = nullptr; return hr; }
+                HRESULT hr = m_pCred->Initialize(cpus, this);
+                if (FAILED(hr)) {
+                    m_pCred->Release();
+                    m_pCred = nullptr;
+                    return hr;
+                }
             }
             return S_OK;
         default:
@@ -46,8 +63,38 @@ IFACEMETHODIMP FaceCredentialProvider::SetUsageScenario(CREDENTIAL_PROVIDER_USAG
 IFACEMETHODIMP FaceCredentialProvider::SetSerialization(const CREDENTIAL_PROVIDER_CREDENTIAL_SERIALIZATION*) {
     return E_NOTIMPL;
 }
-IFACEMETHODIMP FaceCredentialProvider::Advise(ICredentialProviderEvents*, UINT_PTR) { return E_NOTIMPL; }
-IFACEMETHODIMP FaceCredentialProvider::UnAdvise() { return E_NOTIMPL; }
+
+IFACEMETHODIMP FaceCredentialProvider::Advise(ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext) {
+    if (m_pProviderEvents) {
+        m_pProviderEvents->Release();
+        m_pProviderEvents = nullptr;
+    }
+    m_pProviderEvents = pcpe;
+    m_upAdviseContext = upAdviseContext;
+    if (m_pProviderEvents) {
+        m_pProviderEvents->AddRef();
+    }
+    return S_OK;
+}
+
+IFACEMETHODIMP FaceCredentialProvider::UnAdvise() {
+    if (m_pCred) {
+        m_pCred->StopRetryWatch();
+    }
+    if (m_pProviderEvents) {
+        m_pProviderEvents->Release();
+        m_pProviderEvents = nullptr;
+    }
+    m_upAdviseContext = 0;
+    return S_OK;
+}
+
+void FaceCredentialProvider::RequestRescan() {
+    if (!m_pProviderEvents || !m_pCred) return;
+    m_pCred->PrepareImmediateRescan();
+    m_forceAutoLogonNext = true;
+    m_pProviderEvents->CredentialsChanged(m_upAdviseContext);
+}
 
 IFACEMETHODIMP FaceCredentialProvider::GetFieldDescriptorCount(DWORD* pdwCount) {
     *pdwCount = FIELD_COUNT;
@@ -61,7 +108,6 @@ IFACEMETHODIMP FaceCredentialProvider::GetFieldDescriptorAt(DWORD dwIndex,
     auto* out = (CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR*)CoTaskMemAlloc(sizeof(src));
     if (!out) return E_OUTOFMEMORY;
     *out = src;
-    // Label string must be its own CoTaskMem allocation.
     size_t cch = wcslen(src.pszLabel) + 1;
     out->pszLabel = (PWSTR)CoTaskMemAlloc(cch * sizeof(WCHAR));
     if (!out->pszLabel) { CoTaskMemFree(out); return E_OUTOFMEMORY; }
@@ -73,12 +119,9 @@ IFACEMETHODIMP FaceCredentialProvider::GetFieldDescriptorAt(DWORD dwIndex,
 IFACEMETHODIMP FaceCredentialProvider::GetCredentialCount(DWORD* pdwCount, DWORD* pdwDefault,
                                                           BOOL* pbAutoLogonWithDefault) {
     *pdwCount = m_pCred ? 1 : 0;
-    // Face tile is default but does NOT auto-fire when the lock screen
-    // appears. Camera scan only triggers when the user explicitly clicks the
-    // submit arrow — saving wear on the camera and avoiding false-attempt
-    // counters from racking up while the workstation sits idle.
     *pdwDefault = 0;
-    *pbAutoLogonWithDefault = FALSE;
+    *pbAutoLogonWithDefault = m_forceAutoLogonNext ? TRUE : FALSE;
+    m_forceAutoLogonNext = false;
     return S_OK;
 }
 
