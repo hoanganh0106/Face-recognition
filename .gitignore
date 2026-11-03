@@ -1,0 +1,33 @@
+# Legacy local workspace folders & personal development artifacts (never push)
+face_recognition/
+windows-face-unlock/
+native_cpp/
+build/
+build_cmake/
+out/
+.vs/
+.vscode/
+.idea/
+.venv/
+venv/
+__pycache__/
+
+# Biometric templates, personal photos, and encrypted vaults (strictly private!)
+*.dpapi
+embeddings.bin
+enroll/
+data/
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.log
+
+# Build intermediates
+*.obj
+*.o
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.a

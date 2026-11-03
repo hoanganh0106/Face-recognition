@@ -1,0 +1,755 @@
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#ifndef UNICODE
+#define UNICODE
+#endif
+#ifndef _UNICODE
+#define _UNICODE
+#endif
+
+#include <windows.h>
+#include <objidl.h>
+#include <gdiplus.h>
+
+#include "FaceIdHud.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <immintrin.h>
+#include <new>
+
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+
+namespace FaceUnlock {
+
+namespace {
+
+constexpr float kPi = 3.14159265358979323846f;
+
+inline float Clamp01(float v) noexcept {
+    return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+}
+
+inline float EaseOutCubic(float t) noexcept {
+    t = Clamp01(t);
+    float inv = 1.0f - t;
+    return 1.0f - inv * inv * inv;
+}
+
+inline float EaseInCubic(float t) noexcept {
+    t = Clamp01(t);
+    return t * t * t;
+}
+
+// Continuous damped spring matching Apple ProMotion 120Hz Dynamic Island feel
+inline float SpringExpand(float t) noexcept {
+    t = Clamp01(t);
+    if (t >= 1.0f) return 1.0f;
+    return 1.0f - std::exp(-8.8f * t) * std::cos(10.8f * t);
+}
+
+inline double ElapsedSecondsQpc(const LARGE_INTEGER& start,
+                                const LARGE_INTEGER& now,
+                                const LARGE_INTEGER& freq) noexcept {
+    return static_cast<double>(now.QuadPart - start.QuadPart) / static_cast<double>(freq.QuadPart);
+}
+
+// Fast vectorizable premultiplied alpha conversion for UpdateLayeredWindow (AC_SRC_ALPHA)
+void PremultiplyAlphaBuffer(uint32_t* __restrict pixels, int count) noexcept {
+    for (int i = 0; i < count; ++i) {
+        uint32_t px = pixels[i];
+        uint32_t a = px >> 24;
+        if (a == 0u) {
+            pixels[i] = 0u;
+        } else if (a < 255u) {
+            uint32_t r = (((px >> 16) & 0xFFu) * a + 127u) / 255u;
+            uint32_t g = (((px >> 8)  & 0xFFu) * a + 127u) / 255u;
+            uint32_t b = (((px)       & 0xFFu) * a + 127u) / 255u;
+            pixels[i] = (a << 24) | (r << 16) | (g << 8) | b;
+        }
+    }
+}
+
+void AddRoundedRect(Gdiplus::GraphicsPath& path, float x, float y, float w, float h, float r) {
+    float maxR = (std::min)(w, h) * 0.5f;
+    if (r > maxR) r = maxR;
+    float d = r * 2.0f;
+    if (d <= 0.5f) {
+        path.AddRectangle(Gdiplus::RectF(x, y, w, h));
+        return;
+    }
+    path.AddArc(x, y, d, d, 180.0f, 90.0f);
+    path.AddArc(x + w - d, y, d, d, 270.0f, 90.0f);
+    path.AddArc(x + w - d, y + h - d, d, d, 0.0f, 90.0f);
+    path.AddArc(x, y + h - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+}
+
+void DrawFaceIdGlyph(Gdiplus::Graphics& g,
+                     float cx,
+                     float cy,
+                     float size,
+                     float timeSec,
+                     const Gdiplus::Color& primaryCol,
+                     float alphaScale,
+                     bool drawScanBeam) {
+    auto withAlpha = [&](const Gdiplus::Color& c, float mult) -> Gdiplus::Color {
+        int a = static_cast<int>(std::round(c.GetA() * Clamp01(alphaScale * mult)));
+        return Gdiplus::Color(static_cast<BYTE>((std::clamp)(a, 0, 255)), c.GetR(), c.GetG(), c.GetB());
+    };
+
+    float breathe = 1.0f + 0.045f * std::sin(timeSec * 6.8f);
+    float half = (size * 0.5f) * breathe;
+    float cornerR = size * 0.22f;
+    float armLen = size * 0.28f;
+    float stroke = (std::max)(2.0f, size * 0.082f);
+
+    Gdiplus::Pen bracketPen(withAlpha(primaryCol, 1.0f), stroke);
+    bracketPen.SetStartCap(Gdiplus::LineCapRound);
+    bracketPen.SetEndCap(Gdiplus::LineCapRound);
+    bracketPen.SetLineJoin(Gdiplus::LineJoinRound);
+
+    float left = cx - half;
+    float top = cy - half;
+    float right = cx + half;
+    float bottom = cy + half;
+    float d = cornerR * 2.0f;
+
+    {
+        Gdiplus::GraphicsPath p;
+        p.AddLine(left, top + armLen, left, top + cornerR);
+        p.AddArc(left, top, d, d, 180.0f, 90.0f);
+        p.AddLine(left + cornerR, top, left + armLen, top);
+        g.DrawPath(&bracketPen, &p);
+    }
+    {
+        Gdiplus::GraphicsPath p;
+        p.AddLine(right - armLen, top, right - cornerR, top);
+        p.AddArc(right - d, top, d, d, 270.0f, 90.0f);
+        p.AddLine(right, top + cornerR, right, top + armLen);
+        g.DrawPath(&bracketPen, &p);
+    }
+    {
+        Gdiplus::GraphicsPath p;
+        p.AddLine(right, bottom - armLen, right, bottom - cornerR);
+        p.AddArc(right - d, bottom - d, d, d, 0.0f, 90.0f);
+        p.AddLine(right - cornerR, bottom, right - armLen, bottom);
+        g.DrawPath(&bracketPen, &p);
+    }
+    {
+        Gdiplus::GraphicsPath p;
+        p.AddLine(left + armLen, bottom, left + cornerR, bottom);
+        p.AddArc(left, bottom - d, d, d, 90.0f, 90.0f);
+        p.AddLine(left, bottom - cornerR, left, bottom - armLen);
+        g.DrawPath(&bracketPen, &p);
+    }
+
+    float px = std::sin(timeSec * 4.2f) * (size * 0.048f);
+    float py = std::cos(timeSec * 3.1f) * (size * 0.032f);
+    float fcx = cx + px;
+    float fcy = cy + py;
+
+    Gdiplus::Pen featurePen(withAlpha(primaryCol, 0.92f), stroke * 0.88f);
+    featurePen.SetStartCap(Gdiplus::LineCapRound);
+    featurePen.SetEndCap(Gdiplus::LineCapRound);
+    featurePen.SetLineJoin(Gdiplus::LineJoinRound);
+
+    float eyeX = size * 0.16f;
+    float eyeTop = fcy - size * 0.16f;
+    float eyeBot = fcy - size * 0.03f;
+    g.DrawLine(&featurePen, fcx - eyeX, eyeTop, fcx - eyeX, eyeBot);
+    g.DrawLine(&featurePen, fcx + eyeX, eyeTop, fcx + eyeX, eyeBot);
+
+    {
+        Gdiplus::GraphicsPath nose;
+        float nw = size * 0.06f;
+        nose.AddLine(fcx + nw * 0.3f, fcy - size * 0.10f, fcx + nw * 0.3f, fcy + size * 0.05f);
+        nose.AddArc(fcx - nw, fcy + size * 0.01f, nw * 1.3f, size * 0.08f, 0.0f, 115.0f);
+        g.DrawPath(&featurePen, &nose);
+    }
+
+    {
+        float sw = size * 0.32f;
+        float sh = size * 0.18f;
+        g.DrawArc(&featurePen, fcx - sw * 0.5f, fcy + size * 0.06f, sw, sh, 20.0f, 140.0f);
+    }
+
+    if (drawScanBeam) {
+        float sweepPhase = 0.5f + 0.5f * std::sin(timeSec * 5.4f);
+        float beamY = top + (bottom - top) * sweepPhase;
+        float beamH = size * 0.25f;
+
+        Gdiplus::GraphicsPath clipPath;
+        AddRoundedRect(clipPath, left + stroke * 0.5f, top + stroke * 0.5f,
+                       (right - left) - stroke, (bottom - top) - stroke, cornerR * 0.8f);
+        g.SetClip(&clipPath);
+
+        Gdiplus::LinearGradientBrush beamBrush(
+            Gdiplus::PointF(cx, beamY - beamH * 0.5f),
+            Gdiplus::PointF(cx, beamY + beamH * 0.5f),
+            Gdiplus::Color(0, 50, 215, 255),
+            Gdiplus::Color(0, 50, 215, 255));
+        Gdiplus::Color colors[3] = {
+            Gdiplus::Color(0, 50, 215, 255),
+            withAlpha(Gdiplus::Color(115, 90, 230, 255), 1.0f),
+            Gdiplus::Color(0, 50, 215, 255)
+        };
+        Gdiplus::REAL positions[3] = { 0.0f, 0.5f, 1.0f };
+        beamBrush.SetInterpolationColors(colors, positions, 3);
+        g.FillRectangle(&beamBrush, left, beamY - beamH * 0.5f, right - left, beamH);
+
+        Gdiplus::Pen linePen(withAlpha(Gdiplus::Color(205, 145, 245, 255), 1.0f),
+                             (std::max)(1.2f, stroke * 0.38f));
+        g.DrawLine(&linePen, left + stroke, beamY, right - stroke, beamY);
+        g.ResetClip();
+    }
+}
+
+void DrawSuccessCheckGlyph(Gdiplus::Graphics& g,
+                           float cx,
+                           float cy,
+                           float size,
+                           float progress,
+                           float alphaScale) {
+    float p = EaseOutCubic(progress);
+    BYTE aRing = static_cast<BYTE>(std::round(255.0f * Clamp01(alphaScale)));
+    BYTE aFill = static_cast<BYTE>(std::round(46.0f * Clamp01(alphaScale)));
+    BYTE aGlow = static_cast<BYTE>(std::round(34.0f * Clamp01(alphaScale) * p));
+
+    float r = size * 0.48f * (0.86f + 0.14f * p);
+
+    Gdiplus::SolidBrush glowBrush(Gdiplus::Color(aGlow, 48, 209, 88));
+    float gr = r * 1.28f;
+    g.FillEllipse(&glowBrush, cx - gr, cy - gr, gr * 2.0f, gr * 2.0f);
+
+    Gdiplus::SolidBrush fillBrush(Gdiplus::Color(aFill, 48, 209, 88));
+    g.FillEllipse(&fillBrush, cx - r, cy - r, r * 2.0f, r * 2.0f);
+
+    float ringStroke = (std::max)(2.0f, size * 0.075f);
+    Gdiplus::Pen ringPen(Gdiplus::Color(aRing, 48, 209, 88), ringStroke);
+    g.DrawEllipse(&ringPen, cx - r, cy - r, r * 2.0f, r * 2.0f);
+
+    Gdiplus::PointF p0(cx - r * 0.38f, cy + r * 0.02f);
+    Gdiplus::PointF p1(cx - r * 0.08f, cy + r * 0.32f);
+    Gdiplus::PointF p2(cx + r * 0.42f, cy - r * 0.26f);
+
+    Gdiplus::Pen checkPen(Gdiplus::Color(aRing, 70, 235, 110), (std::max)(2.4f, size * 0.095f));
+    checkPen.SetStartCap(Gdiplus::LineCapRound);
+    checkPen.SetEndCap(Gdiplus::LineCapRound);
+    checkPen.SetLineJoin(Gdiplus::LineJoinRound);
+
+    if (p > 0.02f) {
+        Gdiplus::GraphicsPath cp;
+        const float seg1Frac = 0.38f;
+        if (p <= seg1Frac) {
+            float k = p / seg1Frac;
+            Gdiplus::PointF mid(p0.X + (p1.X - p0.X) * k, p0.Y + (p1.Y - p0.Y) * k);
+            cp.AddLine(p0, mid);
+        } else {
+            float k = (p - seg1Frac) / (1.0f - seg1Frac);
+            Gdiplus::PointF end(p1.X + (p2.X - p1.X) * k, p1.Y + (p2.Y - p1.Y) * k);
+            cp.AddLine(p0, p1);
+            cp.AddLine(p1, end);
+        }
+        g.DrawPath(&checkPen, &cp);
+    }
+}
+
+void DrawFailedGlyph(Gdiplus::Graphics& g,
+                     float cx,
+                     float cy,
+                     float size,
+                     float progress,
+                     float alphaScale) {
+    float p = EaseOutCubic(progress);
+    BYTE aRing = static_cast<BYTE>(std::round(255.0f * Clamp01(alphaScale)));
+    BYTE aFill = static_cast<BYTE>(std::round(44.0f * Clamp01(alphaScale)));
+
+    float r = size * 0.46f;
+    Gdiplus::SolidBrush fillBrush(Gdiplus::Color(aFill, 255, 69, 58));
+    g.FillEllipse(&fillBrush, cx - r, cy - r, r * 2.0f, r * 2.0f);
+
+    Gdiplus::Pen ringPen(Gdiplus::Color(aRing, 255, 69, 58), (std::max)(2.0f, size * 0.075f));
+    g.DrawEllipse(&ringPen, cx - r, cy - r, r * 2.0f, r * 2.0f);
+
+    float arm = r * 0.34f * p;
+    Gdiplus::Pen xPen(Gdiplus::Color(aRing, 255, 95, 86), (std::max)(2.3f, size * 0.09f));
+    xPen.SetStartCap(Gdiplus::LineCapRound);
+    xPen.SetEndCap(Gdiplus::LineCapRound);
+    g.DrawLine(&xPen, cx - arm, cy - arm, cx + arm, cy + arm);
+    g.DrawLine(&xPen, cx + arm, cy - arm, cx - arm, cy + arm);
+}
+
+LRESULT CALLBACK HudWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    if (msg == WM_ERASEBKGND) return 1;
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+}  // namespace
+
+FaceIdHud::FaceIdHud()
+    : m_phase(static_cast<int>(Phase::Scanning)),
+      m_abort(false),
+      m_startQpc{},
+      m_qpcFreq{} {
+    QueryPerformanceFrequency(&m_qpcFreq);
+}
+
+FaceIdHud::~FaceIdHud() {
+    StopImmediate();
+}
+
+void FaceIdHud::StartScanning() {
+    StopImmediate();
+    m_abort.store(false, std::memory_order_release);
+    m_phase.store(static_cast<int>(Phase::Scanning), std::memory_order_release);
+    QueryPerformanceCounter(&m_startQpc);
+    try {
+        m_thread = std::thread(&FaceIdHud::ThreadMain, this);
+    } catch (...) {
+    }
+}
+
+void FaceIdHud::FinishWithResult(bool success) {
+    if (!m_thread.joinable()) return;
+
+    // Guarantee smooth Dynamic Island expansion before morphing to checkmark
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    double elapsedMs = ElapsedSecondsQpc(m_startQpc, now, m_qpcFreq) * 1000.0;
+    if (elapsedMs < 320.0) {
+        Sleep(static_cast<DWORD>(320.0 - elapsedMs));
+    }
+
+    m_phase.store(static_cast<int>(success ? Phase::Success : Phase::Failed),
+                  std::memory_order_release);
+
+    if (m_thread.joinable()) {
+        m_thread.join();
+    }
+}
+
+void FaceIdHud::StopImmediate() {
+    m_abort.store(true, std::memory_order_release);
+    if (m_thread.joinable()) {
+        m_thread.join();
+    }
+}
+
+void FaceIdHud::ThreadMain() {
+    // Boost render thread priority for jitter-free 120–165Hz frame delivery
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+
+    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+    ULONG_PTR gdiplusToken = 0;
+    if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr) != Gdiplus::Ok) {
+        return;
+    }
+
+    // Query primary monitor physical geometry + native panel refresh rate (120Hz / 165Hz / 240Hz)
+    POINT ptZero{ 0, 0 };
+    HMONITOR hMon = MonitorFromPoint(ptZero, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    int monX = 0, monY = 0;
+    int monW = GetSystemMetrics(SM_CXSCREEN);
+    int targetFps = 120;
+
+    if (GetMonitorInfoW(hMon, &mi)) {
+        monX = mi.rcMonitor.left;
+        monY = mi.rcMonitor.top;
+        monW = mi.rcMonitor.right - mi.rcMonitor.left;
+
+        DEVMODEW dm{};
+        dm.dmSize = sizeof(dm);
+        if (EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)) {
+            if (dm.dmDisplayFrequency >= 120 && dm.dmDisplayFrequency <= 240) {
+                targetFps = static_cast<int>(dm.dmDisplayFrequency);
+            }
+        }
+    }
+
+    float scale = std::clamp(monW / 1920.0f, 1.0f, 1.85f);
+
+    const int canvasW = static_cast<int>(std::round(410.0f * scale));
+    const int canvasH = static_cast<int>(std::round(136.0f * scale));
+    const int wndX = monX + (monW - canvasW) / 2;
+    const int wndY = monY + static_cast<int>(std::round(8.0f * scale));
+
+    const wchar_t* clsName = L"FaceUnlockDynamicIslandProMotionWnd";
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = HudWndProc;
+    wc.hInstance = GetModuleHandleW(nullptr);
+    wc.lpszClassName = clsName;
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+        clsName,
+        L"",
+        WS_POPUP,
+        wndX, wndY, canvasW, canvasH,
+        nullptr, nullptr, wc.hInstance, nullptr);
+
+    if (!hwnd) {
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+        return;
+    }
+
+    ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+    SetWindowPos(hwnd, HWND_TOPMOST, wndX, wndY, canvasW, canvasH,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+    HDC screenDc = GetDC(nullptr);
+    HDC memDc = CreateCompatibleDC(screenDc);
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = canvasW;
+    bmi.bmiHeader.biHeight = -canvasH;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    void* dibBits = nullptr;
+    HBITMAP hDib = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &dibBits, nullptr, 0);
+    HGDIOBJ oldBmp = hDib ? SelectObject(memDc, hDib) : nullptr;
+
+    // NT Kernel High-Resolution Waitable Timer (~0.5ms hardware precision without global timer side effects)
+    HANDLE hHiResTimer = CreateWaitableTimerExW(
+        nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (!hHiResTimer) {
+        hHiResTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+    }
+
+    if (hDib && dibBits) {
+        Gdiplus::Bitmap gdiBmp(canvasW, canvasH, canvasW * 4, PixelFormat32bppARGB,
+                               static_cast<BYTE*>(dibBits));
+        Gdiplus::FontFamily fontFamily(L"Segoe UI");
+        Gdiplus::Font titleFont(&fontFamily, 14.5f * scale, Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+        Gdiplus::Font subFont(&fontFamily, 11.8f * scale, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+
+        LARGE_INTEGER qpcStart{};
+        QueryPerformanceCounter(&qpcStart);
+        LARGE_INTEGER phaseQpc = qpcStart;
+        Phase activePhase = Phase::Scanning;
+
+        const LONGLONG frameStepQpc = (std::max)(1LL, m_qpcFreq.QuadPart / targetFps);
+        LONGLONG nextDeadlineQpc = qpcStart.QuadPart;
+
+        while (!m_abort.load(std::memory_order_acquire)) {
+            MSG msg{};
+            while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+
+            LARGE_INTEGER nowQpc{};
+            QueryPerformanceCounter(&nowQpc);
+
+            Phase requested = static_cast<Phase>(m_phase.load(std::memory_order_acquire));
+            if (activePhase == Phase::Scanning && requested != Phase::Scanning) {
+                activePhase = requested;
+                phaseQpc = nowQpc;
+            }
+
+            float totalSec = static_cast<float>(ElapsedSecondsQpc(qpcStart, nowQpc, m_qpcFreq));
+            float phaseSec = static_cast<float>(ElapsedSecondsQpc(phaseQpc, nowQpc, m_qpcFreq));
+
+            if (activePhase == Phase::Success && phaseSec >= 0.42f) {
+                activePhase = Phase::Retract;
+                phaseQpc = nowQpc;
+                phaseSec = 0.0f;
+            } else if (activePhase == Phase::Failed && phaseSec >= 0.62f) {
+                activePhase = Phase::Retract;
+                phaseQpc = nowQpc;
+                phaseSec = 0.0f;
+            } else if (activePhase == Phase::Retract && phaseSec >= 0.16f) {
+                break;
+            }
+
+            const float targetW = 308.0f * scale;
+            const float targetH = 84.0f * scale;
+            const float closedW = 68.0f * scale;
+            const float closedH = 26.0f * scale;
+
+            float morph = 1.0f;
+            float masterAlpha = 1.0f;
+            float shakeX = 0.0f;
+            float liftY = 0.0f;
+
+            if (activePhase == Phase::Scanning) {
+                morph = SpringExpand(totalSec / 0.35f);
+                masterAlpha = Clamp01(totalSec / 0.11f);
+            } else if (activePhase == Phase::Success) {
+                morph = 1.0f + 0.026f * std::sin(Clamp01(phaseSec / 0.26f) * kPi);
+                masterAlpha = 1.0f;
+            } else if (activePhase == Phase::Failed) {
+                morph = 1.0f;
+                masterAlpha = 1.0f;
+                shakeX = (15.0f * scale) * std::exp(-6.2f * phaseSec) * std::sin(38.0f * phaseSec);
+            } else if (activePhase == Phase::Retract) {
+                float rt = EaseInCubic(phaseSec / 0.16f);
+                morph = 1.0f - rt;
+                masterAlpha = 1.0f - rt;
+                liftY = -14.0f * scale * rt;
+            }
+
+            float pillW = closedW + (targetW - closedW) * morph;
+            float pillH = closedH + (targetH - closedH) * morph;
+            float pillX = (canvasW - pillW) * 0.5f + shakeX;
+            float pillY = 16.0f * scale + liftY;
+            float pillR = pillH * 0.5f;
+
+            std::memset(dibBits, 0, static_cast<size_t>(canvasW) * static_cast<size_t>(canvasH) * 4u);
+
+            {
+                Gdiplus::Graphics g(&gdiBmp);
+                // Sub-pixel Half offset + un-snapped AntiAlias text prevents 1px grid stepping at 120–165 FPS
+                g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+                g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+                g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
+
+                Gdiplus::Color accentCol(255, 45, 212, 255);
+                if (activePhase == Phase::Success) {
+                    accentCol = Gdiplus::Color(255, 48, 209, 88);
+                } else if (activePhase == Phase::Failed) {
+                    accentCol = Gdiplus::Color(255, 255, 69, 58);
+                }
+
+                for (int layer = 3; layer >= 1; --layer) {
+                    float pad = layer * 4.2f * scale;
+                    BYTE glowA = static_cast<BYTE>(std::round((18.0f / layer) * masterAlpha));
+                    Gdiplus::GraphicsPath glowPath;
+                    AddRoundedRect(glowPath, pillX - pad, pillY - pad * 0.6f + 2.0f * scale,
+                                   pillW + pad * 2.0f, pillH + pad * 1.6f, pillR + pad);
+                    Gdiplus::SolidBrush glowBrush(
+                        Gdiplus::Color(glowA, accentCol.GetR() / 2, accentCol.GetG() / 2, accentCol.GetB() / 2));
+                    g.FillPath(&glowBrush, &glowPath);
+                }
+
+                Gdiplus::GraphicsPath bodyPath;
+                AddRoundedRect(bodyPath, pillX, pillY, pillW, pillH, pillR);
+                BYTE bodyA = static_cast<BYTE>(std::round(244.0f * masterAlpha));
+                Gdiplus::SolidBrush bodyBrush(Gdiplus::Color(bodyA, 11, 13, 19));
+                g.FillPath(&bodyBrush, &bodyPath);
+
+                BYTE rimTopA = static_cast<BYTE>(std::round(78.0f * masterAlpha));
+                BYTE rimBotA = static_cast<BYTE>(std::round(24.0f * masterAlpha));
+                Gdiplus::LinearGradientBrush rimBrush(
+                    Gdiplus::PointF(pillX, pillY),
+                    Gdiplus::PointF(pillX, pillY + pillH),
+                    Gdiplus::Color(rimTopA,
+                                   static_cast<BYTE>((255 + accentCol.GetR()) / 2),
+                                   static_cast<BYTE>((255 + accentCol.GetG()) / 2),
+                                   static_cast<BYTE>((255 + accentCol.GetB()) / 2)),
+                    Gdiplus::Color(rimBotA, accentCol.GetR(), accentCol.GetG(), accentCol.GetB()));
+                Gdiplus::Pen rimPen(&rimBrush, (std::max)(1.2f, 1.35f * scale));
+                g.DrawPath(&rimPen, &bodyPath);
+
+                float contentAlpha = Clamp01((morph - 0.35f) / 0.55f) * masterAlpha;
+                if (contentAlpha > 0.02f) {
+                    g.SetClip(&bodyPath);
+
+                    float iconSize = 44.0f * scale;
+                    float iconCx = pillX + 44.0f * scale;
+                    float iconCy = pillY + pillH * 0.5f;
+
+                    if (activePhase == Phase::Scanning ||
+                        (activePhase == Phase::Retract && requested == Phase::Scanning)) {
+                        DrawFaceIdGlyph(g, iconCx, iconCy, iconSize, totalSec,
+                                        accentCol, contentAlpha, true);
+                    } else if (activePhase == Phase::Success ||
+                               (activePhase == Phase::Retract && requested == Phase::Success)) {
+                        float cp = (activePhase == Phase::Success) ? (phaseSec / 0.25f) : 1.0f;
+                        DrawSuccessCheckGlyph(g, iconCx, iconCy, iconSize, cp, contentAlpha);
+                    } else {
+                        float fp = (activePhase == Phase::Failed) ? (phaseSec / 0.18f) : 1.0f;
+                        DrawFailedGlyph(g, iconCx, iconCy, iconSize, fp, contentAlpha);
+                    }
+
+                    const wchar_t* titleTxt = L"Face ID";
+                    const wchar_t* subTxt   = L"Đang nhận diện khuôn mặt...";
+                    Gdiplus::Color subCol(static_cast<BYTE>(std::round(185.0f * contentAlpha)), 156, 168, 188);
+
+                    if (activePhase == Phase::Success ||
+                        (activePhase == Phase::Retract && requested == Phase::Success)) {
+                        titleTxt = L"Đã mở khóa";
+                        subTxt   = L"Xác thực khuôn mặt thành công";
+                        subCol   = Gdiplus::Color(static_cast<BYTE>(std::round(235.0f * contentAlpha)), 65, 222, 105);
+                    } else if (activePhase == Phase::Failed ||
+                               (activePhase == Phase::Retract && requested == Phase::Failed)) {
+                        titleTxt = L"Không khớp";
+                        subTxt   = L"Nhấn Enter để thử lại";
+                        subCol   = Gdiplus::Color(static_cast<BYTE>(std::round(230.0f * contentAlpha)), 255, 105, 97);
+                    }
+
+                    float textLeft = pillX + 78.0f * scale;
+                    float titleY   = pillY + 20.0f * scale;
+                    float subY     = pillY + 44.0f * scale;
+
+                    Gdiplus::SolidBrush titleBrush(
+                        Gdiplus::Color(static_cast<BYTE>(std::round(250.0f * contentAlpha)), 248, 250, 255));
+                    Gdiplus::SolidBrush subBrush(subCol);
+
+                    g.DrawString(titleTxt, -1, &titleFont, Gdiplus::PointF(textLeft, titleY), &titleBrush);
+                    g.DrawString(subTxt, -1, &subFont, Gdiplus::PointF(textLeft, subY), &subBrush);
+
+                    if (activePhase == Phase::Scanning) {
+                        float dotsBaseX = pillX + pillW - 36.0f * scale;
+                        float dotsCy = pillY + 30.0f * scale;
+                        for (int d = 0; d < 3; ++d) {
+                            float wave = 0.5f + 0.5f * std::sin(totalSec * 8.2f - d * 1.1f);
+                            float dr = (2.2f + 1.3f * wave) * scale;
+                            BYTE da = static_cast<BYTE>(std::round((90.0f + 155.0f * wave) * contentAlpha));
+                            Gdiplus::SolidBrush dotBrush(Gdiplus::Color(da, 50, 215, 255));
+                            float dx = dotsBaseX + d * 8.5f * scale;
+                            g.FillEllipse(&dotBrush, dx - dr, dotsCy - dr, dr * 2.0f, dr * 2.0f);
+                        }
+                    }
+
+                    g.ResetClip();
+                }
+            }
+
+            PremultiplyAlphaBuffer(static_cast<uint32_t*>(dibBits), canvasW * canvasH);
+
+            POINT ptPos{ wndX, wndY };
+            SIZE szWnd{ canvasW, canvasH };
+            POINT ptSrc{ 0, 0 };
+            BLENDFUNCTION blend{};
+            blend.BlendOp = AC_SRC_OVER;
+            blend.BlendFlags = 0;
+            blend.SourceConstantAlpha = 255;
+            blend.AlphaFormat = AC_SRC_ALPHA;
+
+            UpdateLayeredWindow(hwnd, screenDc, &ptPos, &szWnd, memDc, &ptSrc, 0, &blend, ULW_ALPHA);
+
+            // Drift-free 120–165+ FPS ProMotion frame pacing:
+            // 1) Sleep in NT Kernel High-Resolution Timer for bulk of interval (zero CPU waste)
+            // 2) Micro-spin (_mm_pause) for final ~0.3ms to lock exact sub-millisecond cadence
+            nextDeadlineQpc += frameStepQpc;
+            LARGE_INTEGER afterRenderQpc{};
+            QueryPerformanceCounter(&afterRenderQpc);
+            LONGLONG remainingTicks = nextDeadlineQpc - afterRenderQpc.QuadPart;
+            const LONGLONG spinMarginTicks = m_qpcFreq.QuadPart / 3000LL;  // ~0.33 ms
+
+            if (remainingTicks > 0) {
+                if (hHiResTimer && remainingTicks > spinMarginTicks) {
+                    LONGLONG sleepTicks = remainingTicks - spinMarginTicks;
+                    LONGLONG wait100ns = -(sleepTicks * 10000000LL) / m_qpcFreq.QuadPart;
+                    if (wait100ns < -1000LL) {
+                        LARGE_INTEGER dueTime{};
+                        dueTime.QuadPart = wait100ns;
+                        if (SetWaitableTimer(hHiResTimer, &dueTime, 0, nullptr, nullptr, FALSE)) {
+                            WaitForSingleObject(hHiResTimer, 15);
+                        }
+                    }
+                } else if (!hHiResTimer && remainingTicks > m_qpcFreq.QuadPart / 500LL) {
+                    Sleep(1);
+                }
+
+                // Final precision lock to exact QPC frame boundary
+                for (;;) {
+                    LARGE_INTEGER spinQpc{};
+                    QueryPerformanceCounter(&spinQpc);
+                    if (spinQpc.QuadPart >= nextDeadlineQpc) break;
+                    _mm_pause();
+                }
+            } else if (remainingTicks < -frameStepQpc * 2) {
+                // Re-anchor deadline if OS ever preempted thread so it doesn't fast-forward
+                nextDeadlineQpc = afterRenderQpc.QuadPart;
+            }
+        }
+    }
+
+    if (hHiResTimer) CloseHandle(hHiResTimer);
+    if (oldBmp) SelectObject(memDc, oldBmp);
+    if (hDib) DeleteObject(hDib);
+    if (memDc) DeleteDC(memDc);
+    if (screenDc) ReleaseDC(nullptr, screenDc);
+    DestroyWindow(hwnd);
+
+    Gdiplus::GdiplusShutdown(gdiplusToken);
+}
+
+HBITMAP CreateFaceIdTileBitmap() {
+    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+    ULONG_PTR token = 0;
+    if (Gdiplus::GdiplusStartup(&token, &gdiplusStartupInput, nullptr) != Gdiplus::Ok) {
+        return nullptr;
+    }
+
+    const int sz = 128;
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = sz;
+    bmi.bmiHeader.biHeight = -sz;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    HDC screenDc = GetDC(nullptr);
+    void* bits = nullptr;
+    HBITMAP hBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ReleaseDC(nullptr, screenDc);
+
+    if (hBmp && bits) {
+        std::memset(bits, 0, sz * sz * 4);
+        {
+            Gdiplus::Bitmap bmp(sz, sz, sz * 4, PixelFormat32bppARGB, static_cast<BYTE*>(bits));
+            Gdiplus::Graphics g(&bmp);
+            g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+            g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+
+            Gdiplus::GraphicsPath bgPath;
+            AddRoundedRect(bgPath, 6.0f, 6.0f, 116.0f, 116.0f, 28.0f);
+            Gdiplus::LinearGradientBrush bgBrush(
+                Gdiplus::PointF(0.0f, 0.0f),
+                Gdiplus::PointF(128.0f, 128.0f),
+                Gdiplus::Color(255, 16, 26, 46),
+                Gdiplus::Color(255, 10, 14, 24));
+            g.FillPath(&bgBrush, &bgPath);
+
+            Gdiplus::Pen borderPen(Gdiplus::Color(150, 50, 212, 255), 2.5f);
+            g.DrawPath(&borderPen, &bgPath);
+
+            DrawFaceIdGlyph(g, 64.0f, 64.0f, 74.0f, 0.0f,
+                            Gdiplus::Color(255, 50, 215, 255), 1.0f, false);
+        }
+        PremultiplyAlphaBuffer(static_cast<uint32_t*>(bits), sz * sz);
+    }
+
+    Gdiplus::GdiplusShutdown(token);
+    return hBmp;
+}
+
+}  // namespace FaceUnlock
+
+extern "C" __declspec(dllexport) void WINAPI PreviewFaceIdHud(BOOL success) {
+    FaceUnlock::FaceIdHud hud;
+    hud.StartScanning();
+    Sleep(950);
+    hud.FinishWithResult(success != FALSE);
+}
+
+extern "C" __declspec(dllexport) void* WINAPI FaceIdHudStart() {
+    auto* hud = new (std::nothrow) FaceUnlock::FaceIdHud();
+    if (hud) {
+        hud->StartScanning();
+    }
+    return hud;
+}
+
+extern "C" __declspec(dllexport) void WINAPI FaceIdHudFinish(void* handle, BOOL success) {
+    if (!handle) return;
+    auto* hud = static_cast<FaceUnlock::FaceIdHud*>(handle);
+    hud->FinishWithResult(success != FALSE);
+    delete hud;
+}
