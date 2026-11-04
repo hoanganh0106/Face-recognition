@@ -45,7 +45,9 @@ bool NativeRequestUnlock(std::wstring& username,
                          std::string& errorOut);
 
 // Live webcam verification test without returning plaintext credentials (for Desktop test button).
-VerifyStats NativeVerifyLiveCamera(int maxFrames = 6);
+// Reads at least maxFrames frames, and keeps reading until minScanMs has passed since the
+// camera opened (first frames after power-on are often still dark), stopping early on a match.
+VerifyStats NativeVerifyLiveCamera(int maxFrames = 6, int minScanMs = 0);
 
 // Verify a single BGR24 image buffer (width x height, 3 bytes/pixel) against enrolled embeddings.
 VerifyStats NativeVerifyBgrImage(const uint8_t* bgr, int width, int height, bool checkLiveness = true);

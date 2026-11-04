@@ -23,6 +23,7 @@ struct FIELD_STATE_PAIR {
 enum FIELD_ID : DWORD {
     FIELD_SUBMIT = 0,  // Hidden (CPFS_HIDDEN) — satisfies LogonUI auto-logon with 0 visible UI
     FIELD_STATUS = 1,  // Subtle 1-line hint text under user's native Windows 11 name
+    FIELD_TILEIMAGE = 2,  // Icon shown for Face ID in the "Sign-in options" list
     FIELD_COUNT
 };
 

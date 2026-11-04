@@ -1235,7 +1235,7 @@ VaultInfo NativeQueryVaultInfo() {
     return info;
 }
 
-VerifyStats NativeVerifyLiveCamera(int maxFrames) {
+VerifyStats NativeVerifyLiveCamera(int maxFrames, int minScanMs) {
     auto t0 = std::chrono::steady_clock::now();
     VerifyStats stats{};
 
@@ -1274,7 +1274,11 @@ VerifyStats NativeVerifyLiveCamera(int maxFrames) {
     int fw = 0, fh = 0;
 
     int totalFrames = (std::max)(1, maxFrames);
-    for (int i = 0; i < totalFrames; ++i) {
+    const auto scanStart = std::chrono::steady_clock::now();
+    auto withinMinScan = [&]() {
+        return std::chrono::steady_clock::now() - scanStart < std::chrono::milliseconds(minScanMs);
+    };
+    for (int i = 0; i < totalFrames || withinMinScan(); ++i) {
         if (!cam->ReadFrameBgr(bgrFrame, fw, fh)) {
             continue;
         }
@@ -1324,7 +1328,7 @@ bool NativeRequestUnlock(std::wstring& username,
                          std::wstring& password,
                          std::wstring& domain,
                          std::string& errorOut) {
-    VerifyStats vs = NativeVerifyLiveCamera(6);
+    VerifyStats vs = NativeVerifyLiveCamera(6, 3000);
     if (!vs.matched) {
         errorOut = vs.error.empty() ? "no-match" : vs.error;
         return false;

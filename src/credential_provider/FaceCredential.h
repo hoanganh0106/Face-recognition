@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <credentialprovider.h>
 #include <string>
+#include "FaceIdHud.h"
 
 namespace FaceUnlock {
 
@@ -67,7 +68,8 @@ private:
     static LRESULT CALLBACK RetryMsgWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
     void StartRetryWatch() noexcept;
     void PollRetryKeys() noexcept;
-    void TriggerRescan() noexcept;
+    void StartClickProbe(POINT pt) noexcept;
+    void TriggerRescan(const char* reason) noexcept;
 
     LONG m_cRef;
     CREDENTIAL_PROVIDER_USAGE_SCENARIO m_cpus;
@@ -79,14 +81,20 @@ private:
     bool m_selected;
     bool m_inScan;
     bool m_waitingForRetry;
+    bool m_waitingForWake;
+    bool m_hasScanned;
+    bool m_rescanPending;
+    bool m_prevKeys[256];
 
     HWND m_hwndRetry;
     bool m_prevSpaceDown;
     bool m_prevEnterDown;
-    bool m_prevFDown;
-    bool m_prevCtrlDown;
-    ULONGLONG m_lastCtrlTapTick;
+    bool m_prevClickDown;
+    bool m_clickProbePending;
+    ULONGLONG m_clickProbeTick;
     ULONGLONG m_lastScanEndTick;
+
+    FaceIdHud m_hud;
 };
 
 }  // namespace FaceUnlock

@@ -7,11 +7,13 @@ namespace FaceUnlock {
 const CREDENTIAL_PROVIDER_FIELD_DESCRIPTOR s_FieldDescriptors[FIELD_COUNT] = {
     { FIELD_SUBMIT, CPFT_SUBMIT_BUTTON, const_cast<PWSTR>(L"Face ID"), GUID_NULL },
     { FIELD_STATUS, CPFT_SMALL_TEXT,    const_cast<PWSTR>(L"Face ID"), GUID_NULL },
+    { FIELD_TILEIMAGE, CPFT_TILE_IMAGE, const_cast<PWSTR>(L"Face ID"), GUID_NULL },
 };
 
 const FIELD_STATE_PAIR s_FieldStatePairs[FIELD_COUNT] = {
     { CPFS_HIDDEN,                   CPFIS_NONE },  // FIELD_SUBMIT: 100% invisible (no square button)
     { CPFS_DISPLAY_IN_SELECTED_TILE, CPFIS_NONE },  // FIELD_STATUS: subtle native caption text
+    { CPFS_DISPLAY_IN_BOTH,          CPFIS_NONE },  // FIELD_TILEIMAGE: Sign-in options icon
 };
 
 static void PackString(UNICODE_STRING& u, PCWSTR src, BYTE* base, USHORT& cursor) {

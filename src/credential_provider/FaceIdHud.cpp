@@ -98,7 +98,8 @@ void DrawFaceIdGlyph(Gdiplus::Graphics& g,
                      const Gdiplus::Color& primaryCol,
                      float alphaScale,
                      bool drawScanBeam,
-                     bool drawOuterBrackets = true) {
+                     bool drawOuterBrackets = true,
+                     float strokeScale = 1.0f) {
     auto withAlpha = [&](const Gdiplus::Color& c, float mult) -> Gdiplus::Color {
         int a = static_cast<int>(std::round(c.GetA() * Clamp01(alphaScale * mult)));
         return Gdiplus::Color(static_cast<BYTE>((std::clamp)(a, 0, 255)), c.GetR(), c.GetG(), c.GetB());
@@ -108,7 +109,7 @@ void DrawFaceIdGlyph(Gdiplus::Graphics& g,
     float half = (size * 0.5f) * breathe;
     float cornerR = size * 0.22f;
     float armLen = size * 0.28f;
-    float stroke = (std::max)(2.0f, size * 0.082f);
+    float stroke = (std::max)(2.0f, size * 0.082f * strokeScale);
 
     float left = cx - half;
     float top = cy - half;
@@ -273,6 +274,8 @@ LRESULT CALLBACK HudWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 FaceIdHud::FaceIdHud()
     : m_phase(static_cast<int>(Phase::Scanning)),
       m_abort(false),
+      m_running(false),
+      m_stayOnFail(false),
       m_startQpc{},
       m_qpcFreq{} {
     QueryPerformanceFrequency(&m_qpcFreq);
@@ -283,18 +286,28 @@ FaceIdHud::~FaceIdHud() {
 }
 
 void FaceIdHud::StartScanning() {
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        QueryPerformanceCounter(&m_startQpc);
+        if (m_running.load(std::memory_order_acquire)) {
+            m_phase.store(static_cast<int>(Phase::Scanning), std::memory_order_release);
+            return;
+        }
+    }
+
     StopImmediate();
     m_abort.store(false, std::memory_order_release);
     m_phase.store(static_cast<int>(Phase::Scanning), std::memory_order_release);
-    QueryPerformanceCounter(&m_startQpc);
+    m_running.store(true, std::memory_order_release);
     try {
         m_thread = std::thread(&FaceIdHud::ThreadMain, this);
     } catch (...) {
+        m_running.store(false, std::memory_order_release);
     }
 }
 
-void FaceIdHud::FinishWithResult(bool success) {
-    if (!m_thread.joinable()) return;
+void FaceIdHud::FinishWithResult(bool success, bool stayVisibleOnFail) {
+    if (!m_running.load(std::memory_order_acquire)) return;
 
     LARGE_INTEGER now{};
     QueryPerformanceCounter(&now);
@@ -303,11 +316,25 @@ void FaceIdHud::FinishWithResult(bool success) {
         Sleep(static_cast<DWORD>(320.0 - elapsedMs));
     }
 
+    const bool keepVisible = !success && stayVisibleOnFail;
+    m_stayOnFail.store(keepVisible, std::memory_order_release);
     m_phase.store(static_cast<int>(success ? Phase::Success : Phase::Failed),
                   std::memory_order_release);
 
-    if (m_thread.joinable()) {
-        m_thread.join();
+    if (keepVisible) return;
+
+    // LogonUI blocks on this call, so never wait on the animation for more than a few seconds.
+    const ULONGLONG deadline = GetTickCount64() + 3000ULL;
+    while (m_running.load(std::memory_order_acquire) && GetTickCount64() < deadline) {
+        Sleep(5);
+    }
+    StopImmediate();
+}
+
+void FaceIdHud::Hide() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_running.load(std::memory_order_acquire)) {
+        m_phase.store(static_cast<int>(Phase::Retract), std::memory_order_release);
     }
 }
 
@@ -316,6 +343,7 @@ void FaceIdHud::StopImmediate() {
     if (m_thread.joinable()) {
         m_thread.join();
     }
+    m_running.store(false, std::memory_order_release);
 }
 
 void FaceIdHud::ThreadMain() {
@@ -324,6 +352,7 @@ void FaceIdHud::ThreadMain() {
     Gdiplus::GdiplusStartupInput gdiplusStartupInput;
     ULONG_PTR gdiplusToken = 0;
     if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusStartupInput, nullptr) != Gdiplus::Ok) {
+        m_running.store(false, std::memory_order_release);
         return;
     }
 
@@ -374,6 +403,7 @@ void FaceIdHud::ThreadMain() {
 
     if (!hwnd) {
         Gdiplus::GdiplusShutdown(gdiplusToken);
+        m_running.store(false, std::memory_order_release);
         return;
     }
 
@@ -412,10 +442,21 @@ void FaceIdHud::ThreadMain() {
         LARGE_INTEGER qpcStart{};
         QueryPerformanceCounter(&qpcStart);
         LARGE_INTEGER phaseQpc = qpcStart;
-        Phase activePhase = Phase::Scanning;
+        Phase lastRequested = static_cast<Phase>(m_phase.load(std::memory_order_acquire));
+        Phase activePhase = lastRequested;
+        // Phase whose look is kept while the island retracts.
+        Phase retractLook = activePhase;
+        bool idleFrameSettled = false;
+        LONGLONG lastTopmostQpc = qpcStart.QuadPart;
 
         const LONGLONG frameStepQpc = (std::max)(1LL, m_qpcFreq.QuadPart / targetFps);
         LONGLONG nextDeadlineQpc = qpcStart.QuadPart;
+
+        constexpr float kFailedSec  = 0.56f;
+        constexpr float kIdleFadeSec = 0.45f;
+        auto failFlashPulse = [](float t) {
+            return std::exp(-3.4f * t) * (0.55f + 0.45f * std::abs(std::sin(t * 17.0f)));
+        };
 
         while (!m_abort.load(std::memory_order_acquire)) {
             MSG msg{};
@@ -428,25 +469,63 @@ void FaceIdHud::ThreadMain() {
             QueryPerformanceCounter(&nowQpc);
 
             Phase requested = static_cast<Phase>(m_phase.load(std::memory_order_acquire));
-            if (activePhase == Phase::Scanning && requested != Phase::Scanning) {
+            if (requested != lastRequested) {
+                lastRequested = requested;
+                if (requested == Phase::Retract && activePhase != Phase::Retract) {
+                    retractLook = activePhase;
+                }
                 activePhase = requested;
                 phaseQpc = nowQpc;
+                idleFrameSettled = false;
             }
 
             float totalSec = static_cast<float>(ElapsedSecondsQpc(qpcStart, nowQpc, m_qpcFreq));
             float phaseSec = static_cast<float>(ElapsedSecondsQpc(phaseQpc, nowQpc, m_qpcFreq));
 
             if (activePhase == Phase::Success && phaseSec >= 0.42f) {
+                retractLook = Phase::Success;
                 activePhase = Phase::Retract;
                 phaseQpc = nowQpc;
                 phaseSec = 0.0f;
-            } else if (activePhase == Phase::Failed && phaseSec >= 0.56f) {
-                activePhase = Phase::Retract;
+            } else if (activePhase == Phase::Failed && phaseSec >= kFailedSec) {
+                if (m_stayOnFail.load(std::memory_order_acquire)) {
+                    activePhase = Phase::Idle;
+                } else {
+                    retractLook = Phase::Failed;
+                    activePhase = Phase::Retract;
+                }
                 phaseQpc = nowQpc;
                 phaseSec = 0.0f;
             } else if (activePhase == Phase::Retract && phaseSec >= 0.16f) {
-                break;
+                // Exit unless a new phase was requested while retracting (Success/Failed retract
+                // on their own, so the requested phase is not necessarily Retract here).
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (static_cast<Phase>(m_phase.load(std::memory_order_acquire)) == lastRequested) {
+                    m_running.store(false, std::memory_order_release);
+                    break;
+                }
+                continue;
             }
+
+            if (activePhase == Phase::Idle && idleFrameSettled) {
+                if (nowQpc.QuadPart - lastTopmostQpc > m_qpcFreq.QuadPart) {
+                    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                    lastTopmostQpc = nowQpc.QuadPart;
+                }
+                Sleep(15);
+                nextDeadlineQpc = nowQpc.QuadPart;
+                continue;
+            }
+            if (activePhase == Phase::Idle && phaseSec >= kIdleFadeSec + 0.05f) {
+                idleFrameSettled = true;
+            }
+
+            const Phase look = (activePhase == Phase::Retract) ? retractLook : activePhase;
+            // 1 = fully red (end of the failure flash), 0 = back to the scanning accent.
+            const float idleRedMix = (activePhase == Phase::Idle)
+                                         ? 1.0f - EaseOutCubic(phaseSec / kIdleFadeSec)
+                                         : 0.0f;
 
             const float targetW = 308.0f * scale;
             const float targetH = 84.0f * scale;
@@ -470,7 +549,11 @@ void FaceIdHud::ThreadMain() {
                 morph = 1.0f;
                 masterAlpha = 1.0f;
                 shakeX = (14.5f * scale) * std::exp(-6.4f * phaseSec) * std::sin(38.0f * phaseSec);
-                redFlashPulse = std::exp(-3.4f * phaseSec) * (0.55f + 0.45f * std::abs(std::sin(phaseSec * 17.0f)));
+                redFlashPulse = failFlashPulse(phaseSec);
+            } else if (activePhase == Phase::Idle) {
+                morph = 1.0f;
+                masterAlpha = 1.0f;
+                redFlashPulse = failFlashPulse(kFailedSec) * idleRedMix;
             } else if (activePhase == Phase::Retract) {
                 float rt = EaseInCubic(phaseSec / 0.16f);
                 morph = 1.0f - rt;
@@ -492,20 +575,27 @@ void FaceIdHud::ThreadMain() {
                 g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
                 g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
 
-                const bool isFailStyle = (activePhase == Phase::Failed) ||
-                                         (activePhase == Phase::Retract && requested == Phase::Failed);
-                const bool isSuccessStyle = (activePhase == Phase::Success) ||
-                                            (activePhase == Phase::Retract && requested == Phase::Success);
+                const bool isFailStyle = (look == Phase::Failed);
+                const bool isSuccessStyle = (look == Phase::Success);
+                const bool isIdleStyle = (look == Phase::Idle);
+
+                auto lerpByte = [](int from, int to, float t) {
+                    return static_cast<BYTE>(std::round(from + (to - from) * Clamp01(t)));
+                };
 
                 Gdiplus::Color accentCol(255, 45, 212, 255);
                 if (isSuccessStyle) {
                     accentCol = Gdiplus::Color(255, 48, 209, 88);
                 } else if (isFailStyle) {
                     accentCol = Gdiplus::Color(255, 255, 59, 48);
+                } else if (isIdleStyle) {
+                    accentCol = Gdiplus::Color(255, lerpByte(45, 255, idleRedMix),
+                                               lerpByte(212, 59, idleRedMix),
+                                               lerpByte(255, 48, idleRedMix));
                 }
 
                 // Ambient halo glow (boosted crimson pulse during Failed flash)
-                float haloBoost = isFailStyle ? (1.0f + 1.35f * redFlashPulse) : 1.0f;
+                float haloBoost = (isFailStyle || isIdleStyle) ? (1.0f + 1.35f * redFlashPulse) : 1.0f;
                 for (int layer = 3; layer >= 1; --layer) {
                     float pad = layer * 4.2f * scale;
                     int rawA = static_cast<int>(std::round((18.0f * haloBoost / layer) * masterAlpha));
@@ -557,10 +647,11 @@ void FaceIdHud::ThreadMain() {
                         DrawSuccessCheckGlyph(g, iconCx, iconCy, iconSize, cp, contentAlpha);
                     } else {
                         // Keep the sleek Face ID glyph in BOTH Scanning & Red-Flash Failure (no ugly X icon!)
+                        const bool isStatic = isFailStyle || isIdleStyle;
                         DrawFaceIdGlyph(g, iconCx, iconCy, iconSize,
-                                        isFailStyle ? 0.0f : totalSec,
+                                        isStatic ? 0.0f : totalSec,
                                         accentCol, contentAlpha,
-                                        !isFailStyle, true);
+                                        !isStatic, true);
                     }
 
                     const wchar_t* titleTxt = L"Face ID";
@@ -572,9 +663,15 @@ void FaceIdHud::ThreadMain() {
                         subTxt   = L"Xác thực khuôn mặt thành công";
                         subCol   = Gdiplus::Color(static_cast<BYTE>(std::round(235.0f * contentAlpha)), 65, 222, 105);
                     } else if (isFailStyle) {
-                        titleTxt = L"Face ID";
-                        subTxt   = L"Nhấn Space / Enter để quét lại";
+                        subTxt   = L"Không nhận ra khuôn mặt";
                         subCol   = Gdiplus::Color(static_cast<BYTE>(std::round(235.0f * contentAlpha)), 255, 115, 108);
+                    } else if (isIdleStyle) {
+                        subTxt   = L"Chạm hoặc nhấn Space để quét lại";
+                        subCol   = Gdiplus::Color(
+                            static_cast<BYTE>(std::round((185.0f + 50.0f * idleRedMix) * contentAlpha)),
+                            lerpByte(156, 255, idleRedMix),
+                            lerpByte(168, 115, idleRedMix),
+                            lerpByte(188, 108, idleRedMix));
                     }
 
                     float textLeft = pillX + 78.0f * scale;
@@ -588,7 +685,7 @@ void FaceIdHud::ThreadMain() {
                     g.DrawString(titleTxt, -1, &titleFont, Gdiplus::PointF(textLeft, titleY), &titleBrush);
                     g.DrawString(subTxt, -1, &subFont, Gdiplus::PointF(textLeft, subY), &subBrush);
 
-                    if (activePhase == Phase::Scanning) {
+                    if (look == Phase::Scanning) {
                         float dotsBaseX = pillX + pillW - 36.0f * scale;
                         float dotsCy = pillY + 30.0f * scale;
                         for (int d = 0; d < 3; ++d) {
@@ -714,6 +811,55 @@ HBITMAP CreateFaceIdTileBitmap() {
                             Gdiplus::Color(255, 70, 222, 255), 1.0f, false, false);
         }
         PremultiplyAlphaBuffer(static_cast<uint32_t*>(bits), sz * sz);
+    }
+
+    Gdiplus::GdiplusShutdown(token);
+    return hBmp;
+}
+
+namespace {
+
+// Windows' own Sign-in options bitmaps (PIN, password, Hello) are 72x72 on this gray.
+constexpr int kSignInOptionSize = 72;
+void DrawSignInOptionGlyph(Gdiplus::Graphics& g) {
+    g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+    g.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
+    DrawFaceIdGlyph(g, 36.0f, 36.0f, 39.7f, 0.0f,
+                    Gdiplus::Color(255, 255, 255, 255), 1.0f, false, true, 1.29f);
+}
+
+}  // namespace
+
+HBITMAP CreateFaceIdSignInOptionBitmap() {
+    Gdiplus::GdiplusStartupInput gdiplusStartupInput;
+    ULONG_PTR token = 0;
+    if (Gdiplus::GdiplusStartup(&token, &gdiplusStartupInput, nullptr) != Gdiplus::Ok) {
+        return nullptr;
+    }
+
+    const int sz = kSignInOptionSize;
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = sz;
+    bmi.bmiHeader.biHeight = sz;
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    HDC screenDc = GetDC(nullptr);
+    void* bits = nullptr;
+    HBITMAP hBmp = CreateDIBSection(screenDc, &bmi, DIB_RGB_COLORS, &bits, nullptr, 0);
+    ReleaseDC(nullptr, screenDc);
+
+    if (hBmp && bits) {
+        std::memset(bits, 0, sz * sz * 4);
+        // Bottom-up DIB with straight (non-premultiplied) alpha, the layout LoadImage
+        // produces for a 32bpp BMP.
+        BYTE* lastRow = static_cast<BYTE*>(bits) + (sz - 1) * sz * 4;
+        Gdiplus::Bitmap bmp(sz, sz, -sz * 4, PixelFormat32bppARGB, lastRow);
+        Gdiplus::Graphics g(&bmp);
+        g.Clear(Gdiplus::Color(0, 0, 0, 0));
+        DrawSignInOptionGlyph(g);
     }
 
     Gdiplus::GdiplusShutdown(token);
